@@ -1,4 +1,4 @@
-// Self-contained main-world UI for Antigravity Periodic Model Selector (v1.1).
+// Self-contained main-world UI for Antigravity Periodic Model Selector (v1.2).
 // - Periodic Basin HUD in the natural valley (cols 4-11, rows 1-2) for instant side-by-side comparison
 // - Scientific atomic mass & electron configuration badges in the Element Spotlight plaque
 // - Integrated 2-tier Spotlight + Gliding Circular White Thumb Slider:
@@ -108,6 +108,27 @@ module.exports = function installAgPeriodicSelector() {
   };
   const sleep = ms => new Promise(r => setTimeout(r, ms));
 
+  function loadEffortMap() {
+    try {
+      const raw = localGet('ag-periodic-effort-map', '');
+      if (!raw) return new Map();
+      const obj = JSON.parse(raw);
+      return new Map(Object.entries(obj || {}));
+    } catch {
+      return new Map();
+    }
+  }
+
+  function saveEffortMap(map) {
+    try {
+      const obj = {};
+      for (const [k, v] of map.entries()) {
+        if (k && v) obj[k] = v;
+      }
+      localSet('ag-periodic-effort-map', JSON.stringify(obj));
+    } catch {}
+  }
+
   let state = {
     open: false,
     closing: false,
@@ -118,6 +139,7 @@ module.exports = function installAgPeriodicSelector() {
     fullTable: localGet('ag-periodic-full', '0') === '1',
     models: [],
     effortsByBase: new Map(),
+    lastEffortByBase: loadEffortMap(),
     selectedElementNum: null,
     hoveredElementNum: null,
     activeTrigger: null,
@@ -131,6 +153,56 @@ module.exports = function installAgPeriodicSelector() {
     optimisticEffort: null,
     nativeOpTail: Promise.resolve(),
   };
+
+  function normBaseKey(modelBase) {
+    return E.cleanLabel(modelBase || '').toLowerCase();
+  }
+
+  function rememberModelEffort(modelBase, effortKey, elementNum = null) {
+    if (!effortKey) return;
+    const parsedEl = elementNum || E.parseModelInfo(modelBase || '').element?.number || null;
+    const k1 = normBaseKey(modelBase);
+    if (k1) state.lastEffortByBase.set(k1, effortKey);
+    if (parsedEl) state.lastEffortByBase.set(`el:${parsedEl}`, effortKey);
+    saveEffortMap(state.lastEffortByBase);
+
+    if (modelBase && state.effortsByBase.has(modelBase)) {
+      const prev = state.effortsByBase.get(modelBase) || [];
+      if (prev.some(o => o.key === effortKey)) {
+        state.effortsByBase.set(modelBase, prev.map(o => ({ ...o, checked: o.key === effortKey })));
+      }
+    }
+    for (const m of state.models) {
+      if ((k1 && m.modelBase.toLowerCase() === k1) || (parsedEl && m.element?.number === parsedEl)) {
+        m.effort = effortKey;
+      }
+    }
+  }
+
+  function getRememberedEffort(modelBase, elementNum = null) {
+    const parsedEl = elementNum || E.parseModelInfo(modelBase || '').element?.number || null;
+    if (parsedEl && state.lastEffortByBase.has(`el:${parsedEl}`)) {
+      return state.lastEffortByBase.get(`el:${parsedEl}`);
+    }
+    const k1 = normBaseKey(modelBase);
+    if (k1 && state.lastEffortByBase.has(k1)) {
+      return state.lastEffortByBase.get(k1);
+    }
+    return null;
+  }
+
+  function rememberEffortFromLabel(label) {
+    if (!label) return;
+    const info = E.parseModelInfo(label);
+    if (!info.effort) return;
+    if (info.element) {
+      const matched = state.models.find(m => m.element?.number === info.element.number);
+      rememberModelEffort(matched ? matched.modelBase : '', info.effort, info.element.number);
+    } else if (info.isGoogle) {
+      const matched = state.models.find(m => label.toLowerCase().startsWith(m.modelBase.toLowerCase()));
+      if (matched) rememberModelEffort(matched.modelBase, info.effort, null);
+    }
+  }
 
   function isUserSelectionPending() {
     return Boolean(state.applyDebounceTimer || state.pendingApply || state.busy);
@@ -381,12 +453,13 @@ module.exports = function installAgPeriodicSelector() {
       const hasEffortGroup = Boolean(groupSpan);
       const curEffort = E.extractEffort(rawText);
       const parsed = E.parseModelInfo(modelBase);
+      const remembered = getRememberedEffort(modelBase, parsed.element?.number || null);
       out.push({
         ...parsed,
         label: modelBase,
         modelBase,
         rawText,
-        effort: curEffort || parsed.effort,
+        effort: remembered || curEffort || parsed.effort,
         disabled,
         hasEffortGroup,
       });
@@ -481,7 +554,22 @@ module.exports = function installAgPeriodicSelector() {
       if (key) options.push({ key, label, checked, radio });
     }
     if (options.length) {
-      state.effortsByBase.set(modelBase, options.map(({ key, label, checked }) => ({ key, label, checked })));
+      const remembered = getRememberedEffort(modelBase);
+      const nativeChecked = options.find(o => o.checked)?.key || null;
+      if (!remembered && nativeChecked) {
+        rememberModelEffort(modelBase, nativeChecked);
+      }
+      const effectiveChecked = (remembered && options.some(o => o.key === remembered))
+        ? remembered
+        : nativeChecked;
+      state.effortsByBase.set(
+        modelBase,
+        options.map(({ key, label, checked }) => ({
+          key,
+          label,
+          checked: effectiveChecked ? key === effectiveChecked : checked,
+        })),
+      );
     }
     return options;
   }
@@ -493,6 +581,9 @@ module.exports = function installAgPeriodicSelector() {
     const seq = ++state.selectionSeq;
     cancelPendingDebounce();
     state.pendingApply = null;
+    if (targetEffortKey) {
+      rememberModelEffort(modelInfo.modelBase, targetEffortKey, modelInfo.element?.number || null);
+    }
     state.optimisticEffort = { modelBase: modelInfo.modelBase, key: targetEffortKey, seq };
     state.pendingDebounceJob = { modelInfo, targetEffortKey, seq };
     // Wait 240ms so the CSS glide animation completes at 120fps on an idle main thread
@@ -546,14 +637,21 @@ module.exports = function installAgPeriodicSelector() {
 
           const initialTrig = getLiveTrigger();
           const initialLabel = initialTrig ? getTriggerModelText(initialTrig) : state.currentLabel;
+          const desiredEffortKey = job.targetEffortKey
+            || (job.modelInfo.hasEffortGroup
+              ? (getRememberedEffort(job.modelInfo.modelBase, job.modelInfo.element?.number || null) || job.modelInfo.effort || null)
+              : null);
           const alreadyActive = Boolean(
             initialLabel
-            && matchesAppliedTarget(initialLabel, job.modelInfo, job.targetEffortKey)
+            && matchesAppliedTarget(initialLabel, job.modelInfo, desiredEffortKey)
             && (!job.modelInfo.hasEffortGroup || state.effortsByBase.has(job.modelInfo.modelBase)),
           );
           if (alreadyActive) {
             state.currentLabel = initialLabel;
-            if (job.targetEffortKey) job.modelInfo.effort = job.targetEffortKey;
+            rememberEffortFromLabel(initialLabel);
+            if (desiredEffortKey) {
+              rememberModelEffort(job.modelInfo.modelBase, desiredEffortKey, job.modelInfo.element?.number || null);
+            }
             continue;
           }
 
@@ -576,9 +674,10 @@ module.exports = function installAgPeriodicSelector() {
               if (isSuperseded()) break;
               if (!options.length) continue;
 
-              let chosen = job.targetEffortKey
-                ? options.find(o => o.key === job.targetEffortKey)
-                : (options.find(o => o.checked) || options.find(o => o.key === 'medium') || options[0]);
+              let chosen = (desiredEffortKey && options.find(o => o.key === desiredEffortKey))
+                || options.find(o => o.checked)
+                || options.find(o => o.key === 'medium')
+                || options[0];
               if (!chosen) chosen = options[0];
               if (!chosen?.radio) continue;
 
@@ -606,13 +705,14 @@ module.exports = function installAgPeriodicSelector() {
                   job.modelInfo.modelBase,
                   options.map(o => ({ key: o.key, label: o.label, checked: o.key === chosen.key })),
                 );
-                job.modelInfo.effort = chosen.key;
+                rememberModelEffort(job.modelInfo.modelBase, chosen.key, job.modelInfo.element?.number || null);
                 state.currentLabel = confirmedLabel;
                 confirmed = true;
               } else if (attempt === 1) {
                 const fallbackLatest = trig ? getTriggerModelText(trig) : '';
                 if (fallbackLatest && fallbackLatest !== beforeLabel) {
                   state.currentLabel = fallbackLatest;
+                  rememberEffortFromLabel(fallbackLatest);
                 }
               }
             } else {
@@ -696,13 +796,15 @@ module.exports = function installAgPeriodicSelector() {
     const models = byAtomic.get(num) || [];
     const primary = models[0];
     if (!primary || !primary.hasEffortGroup || primary.disabled) return [];
+    const remembered = getRememberedEffort(primary.modelBase, num);
     let cached = state.effortsByBase.get(primary.modelBase) || [];
     if (cached.length < 2) {
       const defaultKeys = num === 10 ? ['low', 'medium', 'high', 'xhigh'] : ['low', 'medium', 'high'];
+      const fallbackKey = remembered || primary.effort || 'medium';
       cached = defaultKeys.map(k => ({
         key: k,
         label: EFFORT_PALETTE[k]?.zh || k,
-        checked: (primary.effort || 'medium') === k,
+        checked: fallbackKey === k,
       }));
     }
     const elInfo = E.BY_NUMBER.get(num);
@@ -712,7 +814,12 @@ module.exports = function installAgPeriodicSelector() {
     const hasOptimistic = Boolean(opt && opt.modelBase === primary.modelBase && opt.seq === state.selectionSeq && isUserSelectionPending());
     const curEffort = hasOptimistic
       ? opt.key
-      : (isActiveElement ? E.extractEffort(state.currentLabel) : primary.effort);
+      : (isActiveElement
+          ? (E.extractEffort(state.currentLabel) || remembered || primary.effort)
+          : (remembered || primary.effort));
+    const effectiveEffort = (curEffort && cached.some(c => c.key === curEffort))
+      ? curEffort
+      : (cached.find(c => c.checked)?.key || cached.find(c => c.key === 'medium')?.key || cached[0]?.key);
 
     // Seamless periodic 200%-width gradient for continuous left-to-right flowing stream at the highest effort level!
     const maxGradientByElement = {
@@ -754,7 +861,7 @@ module.exports = function installAgPeriodicSelector() {
         grad: st.grad,
         gradOpacity: st.gradOpacity,
         glow: st.glow,
-        active: curEffort ? c.key === curEffort : Boolean(c.checked),
+        active: effectiveEffort ? c.key === effectiveEffort : Boolean(c.checked),
         apply: () => scheduleEffortApply(primary, c.key),
       };
     });
@@ -794,6 +901,9 @@ module.exports = function installAgPeriodicSelector() {
 
     const finishClose = () => {
       state.closing = false;
+      if (!openNativeAfter && !state.busy && !state.pendingApply && !state.applyDebounceTimer) {
+        closeNativeMenuIfOpen();
+      }
       if (openNativeAfter || (!state.busy && !state.pendingApply && !state.applyDebounceTimer)) {
         setNativeMenusHidden(false);
       }
@@ -1465,6 +1575,7 @@ module.exports = function installAgPeriodicSelector() {
       };
       trackWrap?.addEventListener('pointerup', finishDrag);
       trackWrap?.addEventListener('pointercancel', finishDrag);
+      trackWrap?.addEventListener('lostpointercapture', finishDrag);
 
       ticks.forEach((btn, idx) => {
         btn.addEventListener('click', () => {
@@ -1587,7 +1698,7 @@ module.exports = function installAgPeriodicSelector() {
         ${nonGoogleHtml}
         <div class="footer">
           <span>${escapeHtml(t('tip'))}</span>
-          <span>v1.1</span>
+          <span>v1.2</span>
         </div>
       </div>
     `;
@@ -1632,21 +1743,28 @@ module.exports = function installAgPeriodicSelector() {
     const selectElementNum = async num => {
       const cellModels = byAtomic.get(num);
       if (!cellModels || !cellModels.length) return;
+      const primary = cellModels[0];
       state.selectedElementNum = num;
       state.hoveredElementNum = null;
       const seq = ++state.selectionSeq;
       cancelPendingDebounce();
-      state.optimisticEffort = null;
-      if (cellModels[0].disabled) {
+      if (primary.disabled) {
+        state.optimisticEffort = null;
         syncActiveStatesInPlace();
         return;
       }
+      const desiredEffort = primary.hasEffortGroup
+        ? (getRememberedEffort(primary.modelBase, num) || primary.effort || null)
+        : null;
+      state.optimisticEffort = desiredEffort
+        ? { modelBase: primary.modelBase, key: desiredEffort, seq }
+        : null;
       for (const cell of shadowRoot.querySelectorAll('.cell')) {
         cell.classList.toggle('selected', Number(cell.dataset.num) === num);
       }
       const curA = E.parseModelInfo(state.currentLabel).element?.number || null;
       updateSpotlight(byAtomic, curA);
-      await applyModelAndEffort(cellModels[0], null, seq);
+      await applyModelAndEffort(primary, desiredEffort, seq);
     };
 
     for (const chip of shadowRoot.querySelectorAll('.basin-chip')) {
@@ -1690,7 +1808,10 @@ module.exports = function installAgPeriodicSelector() {
     for (const btn of shadowRoot.querySelectorAll('[data-legacy-idx]')) {
       btn.addEventListener('click', async () => {
         const picked = otherGoogle[Number(btn.dataset.legacyIdx)];
-        if (picked) await applyModelAndEffort(picked, null);
+        if (!picked) return;
+        state.selectedElementNum = null;
+        state.hoveredElementNum = null;
+        await applyModelAndEffort(picked, null);
       });
     }
     for (const btn of shadowRoot.querySelectorAll('[data-nongoogle-idx]')) {
@@ -1749,6 +1870,7 @@ module.exports = function installAgPeriodicSelector() {
 
     state.activeTrigger = hit;
     state.currentLabel = label;
+    rememberEffortFromLabel(state.currentLabel);
     const curParsed = E.parseModelInfo(state.currentLabel);
     state.selectedElementNum = curParsed.element ? curParsed.element.number : null;
     const openSessionId = ++state.openSessionId;
