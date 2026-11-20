@@ -1,0 +1,11 @@
+{
+  "name": "antigravity-periodic-selector",
+  "version": "1.0.0",
+  "private": false,
+  "description": "Select Google Gemini models from an interactive Periodic Table of Elements in Antigravity while keeping other models native.",
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "preview": "node sidecars/panel/main.mjs"
+  }
+}
