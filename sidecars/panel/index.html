@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Periodic Model Selector</title>
+  <style>
+    :root {
+      --bg: #11141f;
+      --card: #1a1f30;
+      --border: rgba(148, 163, 184, 0.22);
+      --fg: #f1f5ff;
+      --muted: #94a3b8;
+      --dim: #475569;
+    }
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg: #f8fafc;
+        --card: #ffffff;
+        --border: rgba(15, 23, 42, 0.14);
+        --fg: #0f172a;
+        --muted: #475569;
+        --dim: #94a3b8;
+      }
+    }
+    * { box-sizing: border-box; font-family: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
+    body { margin: 0; padding: 14px; background: var(--bg); color: var(--fg); }
+    .top { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+    .brand { display: flex; align-items: center; gap: 9px; }
+    .logo {
+      width: 28px; height: 28px; border-radius: 8px;
+      background: linear-gradient(135deg, #4285F4, #8E6CFF 55%, #34A853);
+      display: grid; place-items: center; color: #fff; font-weight: 800; font-size: 14px;
+    }
+    h1 { margin: 0; font-size: 14px; font-weight: 700; }
+    .sub { font-size: 11px; color: var(--muted); }
+    .controls { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+    .pill {
+      font-size: 11px; padding: 4px 9px; border-radius: 99px;
+      border: 1px solid var(--border); background: var(--card); color: var(--fg);
+      display: inline-flex; align-items: center; gap: 5px;
+    }
+    .dot { width: 7px; height: 7px; border-radius: 99px; background: #94a3b8; }
+    .dot.ok { background: #34d399; box-shadow: 0 0 8px #34d399; }
+    .btn {
+      border: 1px solid var(--border); background: var(--card); color: var(--fg);
+      border-radius: 8px; padding: 4px 10px; font-size: 11px; font-weight: 600; cursor: pointer;
+    }
+    .btn:hover { border-color: #60a5fa; }
+    .grid {
+      display: grid; grid-template-columns: repeat(18, minmax(0, 1fr));
+      gap: 3px; margin-bottom: 12px;
+    }
+    .cell {
+      position: relative; aspect-ratio: 1 / 1.1; min-height: 34px;
+      border-radius: 6px; border: 1px solid var(--border);
+      background: color-mix(in srgb, var(--card) 55%, transparent);
+      color: var(--dim);
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      padding: 2px; cursor: default; user-select: none;
+      transition: transform 110ms ease, border-color 110ms ease;
+    }
+    .cell.featured {
+      cursor: pointer; color: var(--fg);
+      background: color-mix(in srgb, var(--el-accent, #60a5fa) 22%, var(--card));
+      border-color: color-mix(in srgb, var(--el-accent, #60a5fa) 70%, transparent);
+    }
+    .cell.featured:hover { transform: translateY(-2px) scale(1.06); z-index: 3; }
+    .cell .num { position: absolute; top: 2px; left: 3px; font-size: 8px; opacity: 0.72; }
+    .cell .sym { font-size: 12px; font-weight: 800; margin-top: 3px; }
+    .cell .name { font-size: 8px; opacity: 0.85; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .card {
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: 11px; padding: 11px 12px; margin-bottom: 10px;
+    }
+    .card-title { font-size: 13px; font-weight: 700; display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+    .tag {
+      font-size: 10px; font-weight: 600; padding: 2px 7px; border-radius: 99px;
+      background: color-mix(in srgb, var(--el-accent, #60a5fa) 22%, transparent);
+    }
+    .desc { font-size: 12px; color: var(--muted); line-height: 1.45; }
+    .note { font-size: 11px; color: var(--muted); line-height: 1.5; }
+  </style>
+</head>
+<body>
+  <div class="top">
+    <div class="brand">
+      <div class="logo">⚛</div>
+      <div>
+        <h1 id="title">Google Gemini 元素周期表选择器</h1>
+        <div class="sub" id="sub">在输入框选择 Google 模型时自动弹出元素周期表，非 Google 模型保持原样</div>
+      </div>
+    </div>
+    <div class="controls">
+      <span class="pill"><span class="dot" id="statusDot"></span><span id="statusText">检测中...</span></span>
+      <button class="btn" id="toggleTable">全表 (118)</button>
+      <button class="btn" id="toggleLang">EN</button>
+    </div>
+  </div>
+
+  <div class="grid" id="grid"></div>
+
+  <div class="card" id="detail"></div>
+
+  <div class="note" id="note">
+    使用方式：在对话输入框选中任意 Google Gemini 模型时，点击模型选择按钮即会展开元素周期表；点击右上角「其他模型 (原列表)」可随时切换回 Claude / GPT 等模型。当前使用非 Google 模型时，模型选择框与原生完全一致。
+  </div>
+
+  <script src="/elements.js"></script>
+  <script>
+    const E = window.__agPeriodicElementsFactory();
+    let lang = 'zh';
+    let fullTable = false;
+    let focusNum = 10;
+
+    function render() {
+      const maxP = fullTable ? 10 : 4;
+      const list = E.ELEMENTS.filter(el => el.period <= maxP);
+      const grid = document.getElementById('grid');
+      grid.innerHTML = list.map(el => {
+        const meta = E.GEMINI_ELEMENT_META[el.number];
+        const accent = meta ? meta.accent : '#60a5fa';
+        const cls = meta ? 'cell featured' : 'cell';
+        const nm = lang === 'zh' ? el.zh : el.name;
+        return `<div class="${cls}" data-num="${el.number}" style="grid-column:${el.group};grid-row:${el.period};--el-accent:${accent};" title="${el.number} ${el.symbol} ${el.name} (${el.zh})">
+          <span class="num">${el.number}</span>
+          <span class="sym">${el.symbol}</span>
+          <span class="name">${nm}</span>
+        </div>`;
+      }).join('');
+
+      for (const c of grid.querySelectorAll('.cell')) {
+        c.addEventListener('mouseenter', () => { focusNum = Number(c.dataset.num); renderDetail(); });
+        c.addEventListener('click', () => { focusNum = Number(c.dataset.num); renderDetail(); });
+      }
+      document.getElementById('toggleTable').textContent = fullTable
+        ? (lang === 'zh' ? '4 周期 (1–36)' : 'Periods 1–4')
+        : (lang === 'zh' ? '全表 (118)' : 'All 118');
+      document.getElementById('toggleLang').textContent = lang === 'zh' ? 'EN' : '中文';
+      renderDetail();
+    }
+
+    function renderDetail() {
+      const el = E.BY_NUMBER.get(focusNum) || E.BY_NUMBER.get(10);
+      const meta = E.GEMINI_ELEMENT_META[el.number];
+      const accent = meta ? meta.accent : '#60a5fa';
+      const detail = document.getElementById('detail');
+      detail.style.setProperty('--el-accent', accent);
+      const tag = meta ? (lang === 'zh' ? meta.zhTag : meta.enTag) : (lang === 'zh' ? '化学元素' : 'Element');
+      const desc = meta
+        ? (lang === 'zh' ? meta.zhDesc : meta.enDesc)
+        : `${el.name} (${el.zh}) · #${el.number} (${el.symbol})`;
+      detail.innerHTML = `
+        <div class="card-title">
+          <span>#${el.number} ${el.symbol} · ${el.name} (${el.zh})</span>
+          <span class="tag">${tag}</span>
+        </div>
+        <div class="desc">${desc}</div>
+      `;
+    }
+
+    async function pollStatus() {
+      try {
+        const res = await fetch('/api/status');
+        const data = await res.json();
+        const ok = data?.integration?.state === 'mounted';
+        document.getElementById('statusDot').className = 'dot' + (ok ? ' ok' : '');
+        document.getElementById('statusText').textContent = ok
+          ? (lang === 'zh' ? `已挂载 (${data.integration.windows} 窗口)` : `Mounted (${data.integration.windows} win)`)
+          : (data?.integration?.state || 'waiting');
+      } catch {
+        document.getElementById('statusText').textContent = 'offline';
+      }
+    }
+
+    document.getElementById('toggleTable').addEventListener('click', () => { fullTable = !fullTable; render(); });
+    document.getElementById('toggleLang').addEventListener('click', () => { lang = lang === 'zh' ? 'en' : 'zh'; render(); });
+
+    render();
+    pollStatus();
+    setInterval(pollStatus, 4000);
+  </script>
+</body>
+</html>

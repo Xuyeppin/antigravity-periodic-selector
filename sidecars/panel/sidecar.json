@@ -1,0 +1,21 @@
+{
+  "command": "node",
+  "args": [
+    "--max-old-space-size=128",
+    "main.mjs"
+  ],
+  "restart_policy": "always",
+  "display_name": "Periodic Model Selector",
+  "description": "Interactive Periodic Table selector for Google Gemini models in Antigravity",
+  "has_web_ui": true,
+  "ui_config": {
+    "display_name": "Periodic Model Selector",
+    "views": [
+      {
+        "path": "/",
+        "entrypoint": "SIDECAR_UI_ENTRYPOINT_AUX_PANE",
+        "title": "Periodic Model Selector"
+      }
+    ]
+  }
+}
