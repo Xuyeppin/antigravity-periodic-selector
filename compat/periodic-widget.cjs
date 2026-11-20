@@ -1,4 +1,4 @@
-// Self-contained main-world UI for Antigravity Periodic Model Selector (v1.0).
+// Self-contained main-world UI for Antigravity Periodic Model Selector (v1.1).
 // - Periodic Basin HUD in the natural valley (cols 4-11, rows 1-2) for instant side-by-side comparison
 // - Scientific atomic mass & electron configuration badges in the Element Spotlight plaque
 // - Integrated 2-tier Spotlight + Gliding Circular White Thumb Slider:
@@ -123,7 +123,32 @@ module.exports = function installAgPeriodicSelector() {
     activeTrigger: null,
     currentLabel: '',
     bypassUntil: 0,
+    selectionSeq: 0,
+    openSessionId: 0,
+    applyDebounceTimer: null,
+    pendingDebounceJob: null,
+    pendingApply: null,
+    optimisticEffort: null,
+    nativeOpTail: Promise.resolve(),
   };
+
+  function isUserSelectionPending() {
+    return Boolean(state.applyDebounceTimer || state.pendingApply || state.busy);
+  }
+
+  function cancelPendingDebounce() {
+    if (state.applyDebounceTimer) {
+      clearTimeout(state.applyDebounceTimer);
+      state.applyDebounceTimer = null;
+    }
+    state.pendingDebounceJob = null;
+  }
+
+  function serializeNativeOp(fn) {
+    const run = state.nativeOpTail.then(fn, fn);
+    state.nativeOpTail = run.then(() => undefined, () => undefined);
+    return run;
+  }
 
   const I18N = {
     zh: {
@@ -218,7 +243,9 @@ module.exports = function installAgPeriodicSelector() {
             opacity: 0 !important;
             pointer-events: none !important;
             transition: none !important;
+            transition-duration: 0s !important;
             animation: none !important;
+            animation-duration: 0s !important;
           }
         `;
         document.head.appendChild(style);
@@ -228,30 +255,99 @@ module.exports = function installAgPeriodicSelector() {
     }
   }
 
+  function isMenuNodeOpen(menuEl) {
+    if (!menuEl || !menuEl.isConnected || !hasBox(menuEl)) return false;
+    if (menuEl.hasAttribute('data-closed') || menuEl.hasAttribute('data-ending-style')) return false;
+    if (menuEl.hasAttribute('data-base-ui-focusable') && !menuEl.hasAttribute('data-open')) return false;
+    return true;
+  }
+
+  function findLiveNativePanel() {
+    const panels = document.querySelectorAll('[data-testid="model-selector-panel"]');
+    for (const panel of panels) {
+      if (!panel.isConnected || !hasBox(panel)) continue;
+      const parentMenu = panel.closest('[role="menu"]');
+      if (parentMenu && !isMenuNodeOpen(parentMenu)) continue;
+      return panel;
+    }
+    return null;
+  }
+
+  function hasAnyNativeMenuNode() {
+    return Boolean(document.querySelector('[data-testid="model-selector-panel"], [role="menu"]'));
+  }
+
+  function findLiveNestedMenu(item = null) {
+    const nestedMenus = document.querySelectorAll('[role="menu"][data-nested]');
+    for (const nested of nestedMenus) {
+      if (!isMenuNodeOpen(nested)) continue;
+      if (nested.querySelectorAll('[data-testid="model-selector-effort-option"]').length < 1) continue;
+      if (item && item.id) {
+        const labelledBy = nested.getAttribute('aria-labelledby');
+        if (labelledBy && labelledBy !== item.id) continue;
+      }
+      return nested;
+    }
+    return null;
+  }
+
   function closeNativeMenuIfOpen() {
-    if (document.querySelector('[data-testid="model-selector-panel"], [role="menu"]')) {
+    if (findLiveNativePanel() || document.querySelector('[role="menu"][data-open]')) {
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true, cancelable: true }));
     }
   }
 
-  async function ensureNativePanelOpen(waitFirst = false) {
-    let panel = document.querySelector('[data-testid="model-selector-panel"]');
-    if (panel && panel.isConnected && hasBox(panel)) return panel;
-    if (waitFirst) {
-      for (let i = 0; i < 8; i++) {
+  async function closeNativeMenuAndWait(maxWaitMs = 220) {
+    for (let escAttempt = 0; escAttempt < 2; escAttempt++) {
+      if (!findLiveNativePanel() && !document.querySelector('[role="menu"][data-open]')) break;
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true, cancelable: true }));
+      const deadline = Date.now() + Math.min(120, maxWaitMs);
+      while (Date.now() < deadline) {
         await sleep(20);
-        panel = document.querySelector('[data-testid="model-selector-panel"]');
-        if (panel && panel.isConnected && hasBox(panel)) return panel;
+        if (!findLiveNativePanel() && !document.querySelector('[role="menu"][data-open]')) break;
       }
     }
-    const trig = state.activeTrigger || findModelTriggers()[0];
+    // Wait briefly if a dying Base UI portal (data-closed/data-ending-style) is still finishing unmount
+    const cleanupDeadline = Date.now() + Math.min(120, maxWaitMs);
+    while (Date.now() < cleanupDeadline && hasAnyNativeMenuNode() && !findLiveNativePanel()) {
+      await sleep(20);
+    }
+  }
+
+  function getLiveTrigger() {
+    if (state.activeTrigger && state.activeTrigger.isConnected && hasBox(state.activeTrigger)) {
+      return state.activeTrigger;
+    }
+    const found = findModelTriggers()[0] || null;
+    if (found) state.activeTrigger = found;
+    return found;
+  }
+
+  async function ensureNativePanelOpen(waitFirst = false) {
+    let panel = findLiveNativePanel();
+    if (panel) return panel;
+    if (waitFirst) {
+      for (let i = 0; i < 10; i++) {
+        await sleep(20);
+        panel = findLiveNativePanel();
+        if (panel) return panel;
+      }
+    }
+    // Wait briefly if a closing Base UI portal is mid-unmount so trig.click() opens cleanly
+    for (let i = 0; i < 6 && hasAnyNativeMenuNode() && !findLiveNativePanel(); i++) {
+      await sleep(20);
+    }
+    panel = findLiveNativePanel();
+    if (panel) return panel;
+
+    const trig = getLiveTrigger();
     if (!trig) return null;
-    state.bypassUntil = Date.now() + 400;
+    state.bypassUntil = Date.now() + 500;
     trig.click();
-    for (let i = 0; i < 12; i++) {
+    for (let i = 0; i < 16; i++) {
       await sleep(25);
-      panel = document.querySelector('[data-testid="model-selector-panel"]');
-      if (panel && panel.isConnected && hasBox(panel)) return panel;
+      panel = findLiveNativePanel();
+      if (panel) return panel;
     }
     return null;
   }
@@ -312,20 +408,67 @@ module.exports = function installAgPeriodicSelector() {
     return null;
   }
 
-  async function readSubmenuEfforts(modelBase) {
-    const panel = await ensureNativePanelOpen();
-    if (!panel) return [];
+  function matchesAppliedTarget(label, modelInfo, chosenKey = null) {
+    if (!label || !modelInfo) return false;
+    const parsed = E.parseModelInfo(label);
+    const modelMatches = modelInfo.element
+      ? parsed.element?.number === modelInfo.element.number
+      : label.toLowerCase().includes(modelInfo.modelBase.toLowerCase());
+    if (!modelMatches) return false;
+    if (chosenKey) {
+      const actualEffort = E.extractEffort(label);
+      return actualEffort === chosenKey;
+    }
+    return true;
+  }
+
+  function triggerSubmenuOpen(item) {
+    if (!item || !item.isConnected) return;
+    try { item.focus({ preventScroll: true }); } catch { try { item.focus(); } catch {} }
+    try {
+      item.dispatchEvent(new PointerEvent('pointerenter', { bubbles: true, pointerType: 'mouse' }));
+      item.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, pointerType: 'mouse' }));
+    } catch {}
+    item.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', code: 'ArrowRight', keyCode: 39, bubbles: true, cancelable: true }));
+  }
+
+  async function readSubmenuEfforts(modelBase, existingPanel = null, shouldAbort = null) {
+    const panel = (existingPanel && existingPanel.isConnected && findLiveNativePanel() === existingPanel)
+      ? existingPanel
+      : await ensureNativePanelOpen();
+    if (!panel || shouldAbort?.()) return [];
     const item = findMenuItemByBase(panel, modelBase);
     if (!item || item.getAttribute('aria-haspopup') !== 'menu') return [];
 
-    item.focus();
-    item.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', code: 'ArrowRight', keyCode: 39, bubbles: true, cancelable: true }));
+    // Fast path: submenu for this exact item is already open and live
+    let nested = findLiveNestedMenu(item);
+    if (!nested) {
+      // If a different item's nested submenu is currently open, close it first
+      const otherNested = findLiveNestedMenu(null);
+      if (otherNested) {
+        otherNested.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', code: 'ArrowLeft', keyCode: 37, bubbles: true, cancelable: true }));
+        await sleep(25);
+        if (shouldAbort?.()) return [];
+      }
 
-    let nested = null;
-    for (let i = 0; i < 10; i++) {
-      await sleep(25);
-      nested = document.querySelector('[role="menu"][data-nested]');
-      if (nested && nested.querySelectorAll('[data-testid="model-selector-effort-option"]').length >= 1) break;
+      // Let focus settle 1 frame on X11/Chromium before firing ArrowRight so Base UI tracks activeIndex
+      try { item.focus({ preventScroll: true }); } catch { try { item.focus(); } catch {} }
+      await sleep(20);
+      if (shouldAbort?.()) return [];
+      triggerSubmenuOpen(item);
+
+      for (let i = 0; i < 16; i++) {
+        await sleep(25);
+        if (shouldAbort?.()) return [];
+        nested = findLiveNestedMenu(item);
+        if (nested) break;
+        if (i === 5 || i === 10) {
+          try { item.focus({ preventScroll: true }); } catch {}
+          await sleep(16);
+          if (shouldAbort?.()) return [];
+          triggerSubmenuOpen(item);
+        }
+      }
     }
     if (!nested) return [];
 
@@ -343,50 +486,188 @@ module.exports = function installAgPeriodicSelector() {
     return options;
   }
 
-  async function applyModelAndEffort(modelInfo, targetEffortKey = null) {
-    if (state.busy || !modelInfo) return;
-    if (modelInfo.disabled) {
-      syncActiveStatesInPlace();
-      return;
-    }
-    state.busy = true;
-    try {
-      setNativeMenusHidden(true);
-      const panel = await ensureNativePanelOpen();
-      if (!panel) return;
+  let activeDrainPromise = null;
 
-      if (modelInfo.hasEffortGroup) {
-        const options = await readSubmenuEfforts(modelInfo.modelBase);
-        if (options.length) {
-          let chosen = targetEffortKey
-            ? options.find(o => o.key === targetEffortKey)
-            : (options.find(o => o.checked) || options.find(o => o.key === 'medium') || options[0]);
-          if (!chosen) chosen = options[0];
-          if (chosen?.radio) {
-            chosen.radio.click();
-            await sleep(80);
-          }
-          state.effortsByBase.set(
-            modelInfo.modelBase,
-            options.map(o => ({ key: o.key, label: o.label, checked: o.key === chosen.key })),
-          );
-          modelInfo.effort = chosen.key;
-        }
+  function scheduleEffortApply(modelInfo, targetEffortKey) {
+    if (!modelInfo || modelInfo.disabled) return;
+    const seq = ++state.selectionSeq;
+    cancelPendingDebounce();
+    state.pendingApply = null;
+    state.optimisticEffort = { modelBase: modelInfo.modelBase, key: targetEffortKey, seq };
+    state.pendingDebounceJob = { modelInfo, targetEffortKey, seq };
+    // Wait 240ms so the CSS glide animation completes at 120fps on an idle main thread
+    // before triggering background React menu synchronization.
+    state.applyDebounceTimer = setTimeout(() => {
+      const job = state.pendingDebounceJob;
+      state.applyDebounceTimer = null;
+      state.pendingDebounceJob = null;
+      if (job && job.seq === state.selectionSeq) {
+        void enqueueApply(job.modelInfo, job.targetEffortKey, job.seq);
+      }
+    }, 240);
+  }
+
+  function enqueueApply(modelInfo, targetEffortKey = null, explicitSeq = null) {
+    if (!modelInfo) return Promise.resolve();
+    if (modelInfo.disabled) {
+      if (state.open && !isUserSelectionPending()) syncActiveStatesInPlace();
+      return Promise.resolve();
+    }
+    const seq = explicitSeq ?? ++state.selectionSeq;
+    if (explicitSeq === null) {
+      cancelPendingDebounce();
+      if (targetEffortKey) {
+        state.optimisticEffort = { modelBase: modelInfo.modelBase, key: targetEffortKey, seq };
       } else {
-        const item = findMenuItemByBase(panel, modelInfo.modelBase);
-        if (item) {
-          item.click();
-          await sleep(80);
+        state.optimisticEffort = null;
+      }
+    }
+    // Latest-wins coalescing: newer rapid selections replace older unstarted jobs instead of being dropped
+    state.pendingApply = { modelInfo, targetEffortKey, seq };
+    if (!state.busy) {
+      state.busy = true;
+      activeDrainPromise = drainApplyQueue();
+    }
+    return activeDrainPromise || Promise.resolve();
+  }
+
+  function drainApplyQueue() {
+    return serializeNativeOp(async () => {
+      let lastProcessedSeq = 0;
+      try {
+        while (state.pendingApply) {
+          const job = state.pendingApply;
+          state.pendingApply = null;
+          lastProcessedSeq = Math.max(lastProcessedSeq, job.seq);
+          if (job.seq !== state.selectionSeq) continue;
+
+          const isSuperseded = () => job.seq !== state.selectionSeq;
+          setNativeMenusHidden(true);
+
+          const initialTrig = getLiveTrigger();
+          const initialLabel = initialTrig ? getTriggerModelText(initialTrig) : state.currentLabel;
+          const alreadyActive = Boolean(
+            initialLabel
+            && matchesAppliedTarget(initialLabel, job.modelInfo, job.targetEffortKey)
+            && (!job.modelInfo.hasEffortGroup || state.effortsByBase.has(job.modelInfo.modelBase)),
+          );
+          if (alreadyActive) {
+            state.currentLabel = initialLabel;
+            if (job.targetEffortKey) job.modelInfo.effort = job.targetEffortKey;
+            continue;
+          }
+
+          let confirmed = false;
+          for (let attempt = 0; attempt < 2 && !confirmed && !isSuperseded(); attempt++) {
+            if (attempt > 0) {
+              await closeNativeMenuAndWait(200);
+              await sleep(40);
+              if (isSuperseded()) break;
+            }
+
+            const panel = await ensureNativePanelOpen();
+            if (!panel || isSuperseded()) continue;
+
+            const trig = getLiveTrigger();
+            const beforeLabel = trig ? getTriggerModelText(trig) : state.currentLabel;
+
+            if (job.modelInfo.hasEffortGroup) {
+              const options = await readSubmenuEfforts(job.modelInfo.modelBase, panel, isSuperseded);
+              if (isSuperseded()) break;
+              if (!options.length) continue;
+
+              let chosen = job.targetEffortKey
+                ? options.find(o => o.key === job.targetEffortKey)
+                : (options.find(o => o.checked) || options.find(o => o.key === 'medium') || options[0]);
+              if (!chosen) chosen = options[0];
+              if (!chosen?.radio) continue;
+
+              if (attempt > 0) {
+                try { chosen.radio.focus({ preventScroll: true }); } catch {}
+                await sleep(16);
+              }
+              chosen.radio.click();
+
+              // Poll trigger text up to 500ms so slow Linux X11 / React updates are never read stale
+              let confirmedLabel = '';
+              for (let poll = 0; poll < 20; poll++) {
+                await sleep(25);
+                if (isSuperseded()) break;
+                const latest = trig ? getTriggerModelText(trig) : '';
+                if (latest && matchesAppliedTarget(latest, job.modelInfo, chosen.key)) {
+                  confirmedLabel = latest;
+                  break;
+                }
+              }
+
+              if (isSuperseded()) break;
+              if (confirmedLabel) {
+                state.effortsByBase.set(
+                  job.modelInfo.modelBase,
+                  options.map(o => ({ key: o.key, label: o.label, checked: o.key === chosen.key })),
+                );
+                job.modelInfo.effort = chosen.key;
+                state.currentLabel = confirmedLabel;
+                confirmed = true;
+              } else if (attempt === 1) {
+                const fallbackLatest = trig ? getTriggerModelText(trig) : '';
+                if (fallbackLatest && fallbackLatest !== beforeLabel) {
+                  state.currentLabel = fallbackLatest;
+                }
+              }
+            } else {
+              const item = findMenuItemByBase(panel, job.modelInfo.modelBase);
+              if (!item) continue;
+              item.click();
+
+              let confirmedLabel = '';
+              for (let poll = 0; poll < 20; poll++) {
+                await sleep(25);
+                if (isSuperseded()) break;
+                const latest = trig ? getTriggerModelText(trig) : '';
+                if (latest && (matchesAppliedTarget(latest, job.modelInfo, null) || latest !== beforeLabel)) {
+                  confirmedLabel = latest;
+                  break;
+                }
+              }
+              if (isSuperseded()) break;
+              if (confirmedLabel) {
+                state.currentLabel = confirmedLabel;
+                confirmed = true;
+              } else if (attempt === 1) {
+                const fallbackLatest = trig ? getTriggerModelText(trig) : '';
+                if (fallbackLatest) state.currentLabel = fallbackLatest;
+              }
+            }
+          }
+
+          if (!state.pendingApply && findLiveNativePanel()) {
+            await closeNativeMenuAndWait(180);
+          }
+        }
+      } finally {
+        if (state.optimisticEffort && state.optimisticEffort.seq <= lastProcessedSeq && !state.pendingApply && !state.applyDebounceTimer) {
+          state.optimisticEffort = null;
+        }
+        state.busy = false;
+        activeDrainPromise = null;
+        if (state.pendingApply) {
+          state.busy = true;
+          activeDrainPromise = drainApplyQueue();
+        } else {
+          if (!state.open && !state.closing && !state.applyDebounceTimer) {
+            setNativeMenusHidden(false);
+          }
+          if (state.open && !isUserSelectionPending()) {
+            syncActiveStatesInPlace();
+          }
         }
       }
+    });
+  }
 
-      const trig = state.activeTrigger || findModelTriggers()[0];
-      if (trig) state.currentLabel = getTriggerModelText(trig) || state.currentLabel;
-      closeNativeMenuIfOpen();
-    } finally {
-      state.busy = false;
-      if (state.open) syncActiveStatesInPlace();
-    }
+  function applyModelAndEffort(modelInfo, targetEffortKey = null, explicitSeq = null) {
+    return enqueueApply(modelInfo, targetEffortKey, explicitSeq);
   }
 
   function groupedModels() {
@@ -427,7 +708,11 @@ module.exports = function installAgPeriodicSelector() {
     const elInfo = E.BY_NUMBER.get(num);
     const elAccent = E.GEMINI_ELEMENT_META[num]?.accent || CATEGORY_TINT[elInfo?.category] || '#4F7DF3';
     const isActiveElement = E.parseModelInfo(state.currentLabel).element?.number === num;
-    const curEffort = isActiveElement ? E.extractEffort(state.currentLabel) : primary.effort;
+    const opt = state.optimisticEffort;
+    const hasOptimistic = Boolean(opt && opt.modelBase === primary.modelBase && opt.seq === state.selectionSeq && isUserSelectionPending());
+    const curEffort = hasOptimistic
+      ? opt.key
+      : (isActiveElement ? E.extractEffort(state.currentLabel) : primary.effort);
 
     // Seamless periodic 200%-width gradient for continuous left-to-right flowing stream at the highest effort level!
     const maxGradientByElement = {
@@ -462,6 +747,7 @@ module.exports = function installAgPeriodicSelector() {
       const st = effortStyleForStep(c.key, idx);
       return {
         key: c.key,
+        model: primary,
         shortLabel: state.lang === 'zh' ? (pal.zh || c.label) : (pal.en || c.label),
         hint: state.lang === 'zh' ? (pal.zhHint || '') : (pal.enHint || ''),
         color: st.color,
@@ -469,7 +755,7 @@ module.exports = function installAgPeriodicSelector() {
         gradOpacity: st.gradOpacity,
         glow: st.glow,
         active: curEffort ? c.key === curEffort : Boolean(c.checked),
-        apply: () => void applyModelAndEffort(primary, c.key),
+        apply: () => scheduleEffortApply(primary, c.key),
       };
     });
   }
@@ -491,18 +777,30 @@ module.exports = function installAgPeriodicSelector() {
       clearTimeout(state.closeTimer);
       state.closeTimer = null;
     }
+    state.openSessionId++;
+    if (state.applyDebounceTimer) {
+      const pendingJob = state.pendingDebounceJob;
+      cancelPendingDebounce();
+      if (!openNativeAfter && pendingJob && pendingJob.seq === state.selectionSeq) {
+        void enqueueApply(pendingJob.modelInfo, pendingJob.targetEffortKey, pendingJob.seq);
+      }
+    }
     state.open = false;
     state.selectedElementNum = null;
     state.hoveredElementNum = null;
-    closeNativeMenuIfOpen();
+    if (!state.busy && !state.pendingApply) {
+      closeNativeMenuIfOpen();
+    }
 
     const finishClose = () => {
       state.closing = false;
-      setNativeMenusHidden(false);
+      if (openNativeAfter || (!state.busy && !state.pendingApply && !state.applyDebounceTimer)) {
+        setNativeMenusHidden(false);
+      }
       if (shadowRoot) shadowRoot.innerHTML = '';
       if (openNativeAfter) {
         state.bypassUntil = Date.now() + 2000;
-        const trig = state.activeTrigger || findModelTriggers()[0];
+        const trig = getLiveTrigger();
         if (trig) {
           setTimeout(() => { try { trig.click(); } catch {} }, 30);
         }
@@ -1031,7 +1329,10 @@ module.exports = function installAgPeriodicSelector() {
       if (labelEl) {
         labelEl.textContent = sliderElInfo ? `${sliderElInfo.symbol} (${sliderElInfo.zh}) · ${t('effortTitle')}` : t('effortTitle');
       }
-      existingDock.__updateSteps?.(steps, activeIdx);
+      const prevSliderNum = Number(existingDock.dataset.sliderNum || 0);
+      const switchedElement = Boolean(sliderNum && sliderNum !== prevSliderNum);
+      if (sliderNum) existingDock.dataset.sliderNum = String(sliderNum);
+      existingDock.__updateSteps?.(steps, activeIdx, switchedElement);
       return;
     }
 
@@ -1043,7 +1344,7 @@ module.exports = function installAgPeriodicSelector() {
       const cur = steps[activeIdx];
       const ratio = (activeIdx / (steps.length - 1)).toFixed(4);
       dockHtml = `
-        <div class="effort-dock" style="--eff-color:${cur.color};--eff-grad:${cur.grad};--eff-grad-opacity:${cur.gradOpacity};--eff-glow:${cur.glow};--eff-ratio:${ratio};">
+        <div class="effort-dock" data-slider-num="${sliderNum || 0}" style="--eff-color:${cur.color};--eff-grad:${cur.grad};--eff-grad-opacity:${cur.gradOpacity};--eff-glow:${cur.glow};--eff-ratio:${ratio};">
           <div class="ef-left-wrap">
             <div class="ef-label-col">
               <span class="ef-label">${escapeHtml(sliderElInfo ? `${sliderElInfo.symbol} (${sliderElInfo.zh}) · ${t('effortTitle')}` : t('effortTitle'))}</span>
@@ -1105,24 +1406,17 @@ module.exports = function installAgPeriodicSelector() {
         trackWrap?.setAttribute('aria-valuenow', String(idx));
       };
 
-      let applyTimer = null;
       const scheduleApply = step => {
         if (!step) return;
-        if (applyTimer) clearTimeout(applyTimer);
-        // Wait 260ms so the CSS glide animation completes at 120fps on a 100% idle main thread
-        // before triggering background React menu synchronization!
-        applyTimer = setTimeout(() => {
-          applyTimer = null;
-          step.apply();
-        }, 260);
+        step.apply();
       };
 
-      dock.__updateSteps = (newSteps, newIdx) => {
+      dock.__updateSteps = (newSteps, newIdx, forceSync = false) => {
         liveSteps = newSteps;
         ticks.forEach((b, i) => {
           if (newSteps[i]) b.textContent = newSteps[i].shortLabel;
         });
-        if (!dock.classList.contains('dragging') && !applyTimer) {
+        if (!dock.classList.contains('dragging') && (forceSync || !isUserSelectionPending())) {
           previewStep(newIdx);
         }
       };
@@ -1143,7 +1437,9 @@ module.exports = function installAgPeriodicSelector() {
       let dragging = false;
       trackWrap?.addEventListener('pointerdown', ev => {
         ev.preventDefault();
-        if (applyTimer) { clearTimeout(applyTimer); applyTimer = null; }
+        state.selectionSeq++;
+        cancelPendingDebounce();
+        state.pendingApply = null;
         dragging = true;
         try { trackWrap.setPointerCapture(ev.pointerId); } catch {}
         const r = ratioFromPointer(ev.clientX);
@@ -1291,7 +1587,7 @@ module.exports = function installAgPeriodicSelector() {
         ${nonGoogleHtml}
         <div class="footer">
           <span>${escapeHtml(t('tip'))}</span>
-          <span>v1.0</span>
+          <span>v1.1</span>
         </div>
       </div>
     `;
@@ -1338,7 +1634,19 @@ module.exports = function installAgPeriodicSelector() {
       if (!cellModels || !cellModels.length) return;
       state.selectedElementNum = num;
       state.hoveredElementNum = null;
-      await applyModelAndEffort(cellModels[0], null);
+      const seq = ++state.selectionSeq;
+      cancelPendingDebounce();
+      state.optimisticEffort = null;
+      if (cellModels[0].disabled) {
+        syncActiveStatesInPlace();
+        return;
+      }
+      for (const cell of shadowRoot.querySelectorAll('.cell')) {
+        cell.classList.toggle('selected', Number(cell.dataset.num) === num);
+      }
+      const curA = E.parseModelInfo(state.currentLabel).element?.number || null;
+      updateSpotlight(byAtomic, curA);
+      await applyModelAndEffort(cellModels[0], null, seq);
     };
 
     for (const chip of shadowRoot.querySelectorAll('.basin-chip')) {
@@ -1443,6 +1751,8 @@ module.exports = function installAgPeriodicSelector() {
     state.currentLabel = label;
     const curParsed = E.parseModelInfo(state.currentLabel);
     state.selectedElementNum = curParsed.element ? curParsed.element.number : null;
+    const openSessionId = ++state.openSessionId;
+    const openSeq = state.selectionSeq;
     setNativeMenusHidden(true);
 
     const hadCachedModels = state.models.length > 0;
@@ -1451,30 +1761,51 @@ module.exports = function installAgPeriodicSelector() {
       render(false);
     }
 
-    void (async () => {
+    void serializeNativeOp(async () => {
+      if (state.openSessionId !== openSessionId) return;
       const panel = await ensureNativePanelOpen(true);
       if (!panel) {
-        if (!hadCachedModels) setNativeMenusHidden(false);
+        if (!hadCachedModels && !state.open) setNativeMenusHidden(false);
         return;
       }
+      if (state.openSessionId !== openSessionId) return;
+
       state.models = parsePanelModels(panel);
       if (!hadCachedModels) {
         state.open = true;
         render(false);
-      } else if (state.open) {
+      } else if (state.open && state.selectionSeq === openSeq && !isUserSelectionPending()) {
         syncActiveStatesInPlace();
       }
 
+      const stillUntouched = () => (
+        state.open
+        && state.openSessionId === openSessionId
+        && state.selectionSeq === openSeq
+        && !state.pendingApply
+        && !state.applyDebounceTimer
+      );
+
       const { byAtomic } = groupedModels();
       const activeList = state.selectedElementNum ? (byAtomic.get(state.selectedElementNum) || []) : [];
-      if (activeList[0]?.hasEffortGroup && !activeList[0]?.disabled) {
-        await readSubmenuEfforts(activeList[0].modelBase);
-        closeNativeMenuIfOpen();
-        if (state.open) syncActiveStatesInPlace();
-      } else {
-        closeNativeMenuIfOpen();
+      const activeModel = activeList[0];
+      const needsEffortProbe = Boolean(
+        stillUntouched()
+        && activeModel?.hasEffortGroup
+        && !activeModel?.disabled
+        && (!state.effortsByBase.has(activeModel.modelBase) || !E.extractEffort(state.currentLabel)),
+      );
+
+      if (needsEffortProbe) {
+        await readSubmenuEfforts(activeModel.modelBase, panel, () => !stillUntouched());
       }
-    })();
+      if (state.openSessionId === openSessionId && state.selectionSeq === openSeq && !state.pendingApply) {
+        await closeNativeMenuAndWait(180);
+      }
+      if (stillUntouched() && !state.busy) {
+        syncActiveStatesInPlace();
+      }
+    });
   }
 
   function onKeyDown(event) {
@@ -1499,6 +1830,9 @@ module.exports = function installAgPeriodicSelector() {
 
   window.__agPeriodicDispose = () => {
     if (state.closeTimer) clearTimeout(state.closeTimer);
+    cancelPendingDebounce();
+    state.pendingApply = null;
+    state.openSessionId++;
     setNativeMenusHidden(false);
     state.open = false;
     document.removeEventListener('pointerdown', onDocumentPointerDownCapture, true);
