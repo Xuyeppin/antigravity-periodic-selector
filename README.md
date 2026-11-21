@@ -6,7 +6,7 @@
 
 **在 Google Antigravity 中以「化学元素周期表」选择 Google Gemini 模型，非 Google 模型保持原生体验。**
 
-[![Version 1.3](https://img.shields.io/badge/version-v1.3-4F7DF3?style=flat-square&labelColor=161925)](#)
+[![Version 1.3.1](https://img.shields.io/badge/version-v1.3.1-4F7DF3?style=flat-square&labelColor=161925)](#)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-34D399?style=flat-square&labelColor=161925)](#各系统安装方法)
 [![Antigravity 2.33+](https://img.shields.io/badge/Antigravity-2.33%2B-A78BFA?style=flat-square&labelColor=161925)](#)
 [![License MIT](https://img.shields.io/badge/license-MIT-94A3B8?style=flat-square&labelColor=161925)](LICENSE)
