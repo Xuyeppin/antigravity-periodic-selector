@@ -6,7 +6,7 @@
 
 **在 Google Antigravity 中以「化学元素周期表」选择 Google Gemini 模型，非 Google 模型保持原生体验。**
 
-[![Version 1.2](https://img.shields.io/badge/version-v1.2-4F7DF3?style=flat-square&labelColor=161925)](#)
+[![Version 1.3](https://img.shields.io/badge/version-v1.3-4F7DF3?style=flat-square&labelColor=161925)](#)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-34D399?style=flat-square&labelColor=161925)](#各系统安装方法)
 [![Antigravity 2.33+](https://img.shields.io/badge/Antigravity-2.33%2B-A78BFA?style=flat-square&labelColor=161925)](#)
 [![License MIT](https://img.shields.io/badge/license-MIT-94A3B8?style=flat-square&labelColor=161925)](LICENSE)
@@ -33,7 +33,10 @@ Google 在 **Gemini 4** 世代采用**化学元素周期表**命名模型（如 
 4. **非 Google 模型 100% 保持原样**：
    - 当切换到 Claude、GPT 等非 Google 模型后，再次点击模型选择器将**完全保持 Antigravity 原生下拉列表**，不做任何拦截；
    - 在周期表浮窗中也可随时点击底部「其他模型」标签或右上角 **「原生列表 ↗」** 切回原生菜单。
-5. **零外部依赖、不修改 `app.asar`**：
+5. **自适应窗口缩放与一键从 GitHub 更新**：
+   - 打开元素周期表期间拖动调整 Antigravity 窗口或分栏大小，浮窗会自动等比缩放与重定位，永不裁剪；
+   - 点击右下角 **`↻ 一键更新`**（或在侧边栏面板中点击），即可直接从 GitHub 检测、校验并热更新到最新版本（按住 `Shift` 点击可强制覆盖同步）。
+6. **零外部依赖、不修改 `app.asar`**：
    - 纯 Node.js + Shadow DOM 样式隔离，客户端升级后不会丢失。
 
 ---
@@ -151,7 +154,8 @@ antigravity-periodic-selector/
 ├── compat/
 │   ├── elements.cjs             # 118 号化学元素数据、Gemini 4 元素元数据与模型识别器
 │   ├── periodic-widget.cjs      # Shadow DOM 元素周期表浮窗与 Base UI 思考档位同步组件
-│   └── runtime-ui.mjs           # 零依赖本地回环 CDP 自动注入器
+│   ├── runtime-ui.mjs           # 零依赖本地回环 CDP 自动注入器与热更新桥接
+│   └── updater.mjs              # 零依赖 GitHub Release 检测与原子一键更新器
 ├── sidecars/
 │   └── panel/
 │       ├── sidecar.json         # Antigravity Sidecar 声明文件
