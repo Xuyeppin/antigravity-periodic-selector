@@ -75,10 +75,11 @@ export async function discoverTargets(profile = defaultProfileDir()) {
 }
 
 class CdpConnection {
-  constructor(url, { timeout = 5000, onClose = () => {} } = {}) {
+  constructor(url, { timeout = 5000, onClose = () => {}, onEvent = () => {} } = {}) {
     this.url = url;
     this.timeout = timeout;
     this.onClose = onClose;
+    this.onEvent = onEvent;
     this.pending = new Map();
     this.nextId = 0;
     this.closed = false;
@@ -97,6 +98,8 @@ class CdpConnection {
           clearTimeout(item.timer);
           if (msg.error) item.reject(new Error('CDP error: ' + msg.error.code));
           else item.resolve(msg.result || {});
+        } else if (msg.method) {
+          this.onEvent(msg.method, msg.params || {});
         }
       } catch {}
     });
@@ -164,12 +167,13 @@ export function buildInjectedSource(elementsCjs, widgetCjs) {
 }
 
 export class PeriodicRuntimeUi {
-  constructor({ source, profile = defaultProfileDir(), dataDir = defaultDataDir(), enabled = () => true, interval = 3000 }) {
+  constructor({ source, profile = defaultProfileDir(), dataDir = defaultDataDir(), enabled = () => true, interval = 3000, onHostAction = null }) {
     this.source = source;
     this.profile = profile;
     this.dataDir = dataDir;
     this.enabled = enabled;
     this.interval = interval;
+    this.onHostAction = onHostAction;
     this.sessions = new Map();
     this.running = false;
     this.busy = false;
@@ -192,11 +196,37 @@ export class PeriodicRuntimeUi {
   }
 
   async attach(target) {
-    const conn = new CdpConnection(target.webSocketDebuggerUrl);
+    const conn = new CdpConnection(target.webSocketDebuggerUrl, {
+      onEvent: (method, params) => {
+        if (method !== 'Runtime.bindingCalled' || params.name !== '__agPeriodicHostAction' || !this.onHostAction) return;
+        void (async () => {
+          let reqPayload = null;
+          try { reqPayload = JSON.parse(params.payload || '{}'); } catch { return; }
+          let reply;
+          try {
+            reply = await this.onHostAction(reqPayload, conn);
+          } catch (err) {
+            reply = { ok: false, error: err?.message || 'Host action failed' };
+          }
+          const envelope = { id: reqPayload?.id, ...(reply && typeof reply === 'object' ? reply : { ok: true }) };
+          try {
+            if (!conn.closed) {
+              await conn.command('Runtime.evaluate', {
+                expression: `window.__agPeriodicHostReply?.(${JSON.stringify(envelope)})`,
+              });
+            }
+          } catch {}
+        })();
+      },
+    });
     conn.origin = new URL(target.url).origin;
     try {
       await conn.open();
       await conn.command('Page.enable');
+      if (this.onHostAction) {
+        await conn.command('Runtime.enable');
+        await conn.command('Runtime.addBinding', { name: '__agPeriodicHostAction' });
+      }
       const guarded = `if (location.origin === ${JSON.stringify(conn.origin)}) { ${this.source} }`;
       conn.scriptId = (await conn.command('Page.addScriptToEvaluateOnNewDocument', { source: guarded })).identifier;
       const res = await conn.command('Runtime.evaluate', { expression: guarded });
@@ -206,6 +236,24 @@ export class PeriodicRuntimeUi {
       try { if (conn.scriptId) await conn.command('Page.removeScriptToEvaluateOnNewDocument', { identifier: conn.scriptId }); } catch {}
       conn.close();
       throw err;
+    }
+  }
+
+  async updateSource(newSource, postUpdateNotice = null) {
+    this.source = newSource;
+    for (const conn of this.sessions.values()) {
+      if (conn.closed) continue;
+      try {
+        if (conn.scriptId) {
+          await conn.command('Page.removeScriptToEvaluateOnNewDocument', { identifier: conn.scriptId }).catch(() => {});
+        }
+        const guarded = `if (location.origin === ${JSON.stringify(conn.origin)}) { ${this.source} }`;
+        conn.scriptId = (await conn.command('Page.addScriptToEvaluateOnNewDocument', { source: guarded })).identifier;
+        const preamble = postUpdateNotice
+          ? `window.__agPeriodicPostUpdate = ${JSON.stringify(postUpdateNotice)};\n`
+          : '';
+        await conn.command('Runtime.evaluate', { expression: `${preamble}${guarded}` });
+      } catch {}
     }
   }
 

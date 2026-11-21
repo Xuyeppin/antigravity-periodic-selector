@@ -1,4 +1,4 @@
-// Self-contained main-world UI for Antigravity Periodic Model Selector (v1.2).
+// Self-contained main-world UI for Antigravity Periodic Model Selector (v1.3).
 // - Periodic Basin HUD in the natural valley (cols 4-11, rows 1-2) for instant side-by-side comparison
 // - Scientific atomic mass & electron configuration badges in the Element Spotlight plaque
 // - Integrated 2-tier Spotlight + Gliding Circular White Thumb Slider:
@@ -18,6 +18,8 @@ module.exports = function installAgPeriodicSelector() {
 
   const HOST_ID = 'ag-periodic-selector-host';
   const HIDE_STYLE_ID = 'ag-periodic-hide-native-menus';
+  const WIDGET_VERSION = 'v1.3';
+  const GITHUB_RELEASES_URL = 'https://github.com/Xuyeppin/antigravity-periodic-selector/releases/latest';
 
   const CATEGORY_TINT = {
     nonmetal:   '#60A5FA',
@@ -241,6 +243,15 @@ module.exports = function installAgPeriodicSelector() {
       unavailableBadge: '暂未上线',
       noModels: '未识别到元素模型，点击右上角「原生列表」查看完整菜单。',
       tip: '点击外部空白处或按 Esc 关闭 · ← → 键可微调思考程度',
+      updateIdle: '↻ 一键更新',
+      updateChecking: '↻ 检查中...',
+      updateUpdating: '↻ 更新中...',
+      updateAvailable: '⬇ 更新至',
+      updateLatest: '✓ 已是最新',
+      updateDone: '✓ 已更新至',
+      updateFailed: '⚠ 更新失败',
+      updateNoSidecar: '请先通过插件安装启动以启用一键更新',
+      updateTooltip: '点击从 GitHub 检查并一键更新（按住 Shift 点击强制覆盖同步）',
     },
     en: {
       title: 'Gemini Periodic Table',
@@ -260,9 +271,146 @@ module.exports = function installAgPeriodicSelector() {
       unavailableBadge: 'Not Released',
       noModels: 'No element models detected. Click "Native List" to view the full menu.',
       tip: 'Click outside or press Esc to close · Use ← → keys to nudge effort',
+      updateIdle: '↻ Update',
+      updateChecking: '↻ Checking...',
+      updateUpdating: '↻ Updating...',
+      updateAvailable: '⬇ Update to',
+      updateLatest: '✓ Up to date',
+      updateDone: '✓ Updated to',
+      updateFailed: '⚠ Failed',
+      updateNoSidecar: 'Plugin sidecar required for one-click update',
+      updateTooltip: 'Click to check & update from GitHub (Shift+click to force sync)',
     },
   };
   const t = key => (I18N[state.lang] || I18N.zh)[key] || key;
+
+  const hostPending = new Map();
+  let hostReqSeq = 0;
+  window.__agPeriodicHostReply = reply => {
+    if (!reply || !reply.id) return;
+    const item = hostPending.get(reply.id);
+    if (!item) return;
+    hostPending.delete(reply.id);
+    clearTimeout(item.timer);
+    item.resolve(reply);
+  };
+
+  function callHostAction(action, extra = {}, timeoutMs = 25000) {
+    if (typeof window.__agPeriodicHostAction !== 'function') {
+      return Promise.resolve({ ok: false, noSidecar: true, error: t('updateNoSidecar') });
+    }
+    return new Promise(resolve => {
+      const id = `req_${++hostReqSeq}_${Date.now()}`;
+      const timer = setTimeout(() => {
+        hostPending.delete(id);
+        resolve({ ok: false, error: 'Timeout' });
+      }, timeoutMs);
+      hostPending.set(id, { resolve, timer });
+      try {
+        window.__agPeriodicHostAction(JSON.stringify({ id, action, ...extra }));
+      } catch (err) {
+        clearTimeout(timer);
+        hostPending.delete(id);
+        resolve({ ok: false, error: err?.message || 'Host call failed' });
+      }
+    });
+  }
+
+  let updateResetTimer = null;
+  const postUpdateInfo = window.__agPeriodicPostUpdate || null;
+  if (postUpdateInfo) {
+    try { delete window.__agPeriodicPostUpdate; } catch {}
+  }
+  const updateState = postUpdateInfo
+    ? { status: 'updated', latestTag: postUpdateInfo.tag || WIDGET_VERSION, error: '' }
+    : { status: 'idle', latestTag: '', error: '' };
+
+  function getUpdateButtonView() {
+    const st = updateState.status;
+    if (st === 'checking') return { text: t('updateChecking'), cls: 'is-busy', disabled: true, title: t('updateTooltip') };
+    if (st === 'updating') return { text: t('updateUpdating'), cls: 'is-busy', disabled: true, title: t('updateTooltip') };
+    if (st === 'available') return { text: `${t('updateAvailable')} ${updateState.latestTag}`, cls: 'has-update', disabled: false, title: t('updateTooltip') };
+    if (st === 'latest') return { text: t('updateLatest'), cls: 'is-ok', disabled: false, title: t('updateTooltip') };
+    if (st === 'updated') return { text: `${t('updateDone')} ${updateState.latestTag || WIDGET_VERSION}`, cls: 'is-ok', disabled: false, title: t('updateTooltip') };
+    if (st === 'error') return { text: t('updateFailed'), cls: 'is-err', disabled: false, title: updateState.error || t('updateTooltip') };
+    return { text: t('updateIdle'), cls: '', disabled: false, title: t('updateTooltip') };
+  }
+
+  function refreshUpdateButton() {
+    const btn = shadowRoot?.querySelector('[data-action="update-plugin"]');
+    if (!btn) return;
+    const view = getUpdateButtonView();
+    btn.textContent = view.text;
+    btn.disabled = view.disabled;
+    btn.title = view.title;
+    btn.className = `update-btn ${view.cls}`.trim();
+  }
+
+  function scheduleUpdateReset(delayMs = 3600) {
+    if (updateResetTimer) clearTimeout(updateResetTimer);
+    updateResetTimer = setTimeout(() => {
+      updateResetTimer = null;
+      if (updateState.status === 'latest' || updateState.status === 'updated' || updateState.status === 'error') {
+        updateState.status = 'idle';
+        updateState.error = '';
+        refreshUpdateButton();
+      }
+    }, delayMs);
+  }
+
+  if (updateState.status === 'updated') {
+    scheduleUpdateReset(5000);
+  }
+
+  async function checkUpdateInBackground() {
+    if (updateState.status !== 'idle') return;
+    if (typeof window.__agPeriodicHostAction !== 'function') return;
+    const lastCheck = Number(localGet('ag-periodic-last-update-check', '0'));
+    if (Date.now() - lastCheck < 30 * 60 * 1000) return;
+    localSet('ag-periodic-last-update-check', String(Date.now()));
+    const res = await callHostAction('check-update', {}, 12000);
+    if (res?.ok && res.hasUpdate && updateState.status === 'idle') {
+      updateState.status = 'available';
+      updateState.latestTag = res.latestTag || '';
+      refreshUpdateButton();
+    }
+  }
+
+  async function handleOneClickUpdate(force = false) {
+    if (updateState.status === 'checking' || updateState.status === 'updating') return;
+    if (updateResetTimer) { clearTimeout(updateResetTimer); updateResetTimer = null; }
+    if (typeof window.__agPeriodicHostAction !== 'function') {
+      updateState.status = 'error';
+      updateState.error = t('updateNoSidecar');
+      refreshUpdateButton();
+      scheduleUpdateReset(4000);
+      try { window.open(GITHUB_RELEASES_URL, '_blank', 'noopener'); } catch {}
+      return;
+    }
+    updateState.status = updateState.status === 'available' || force ? 'updating' : 'checking';
+    updateState.error = '';
+    refreshUpdateButton();
+
+    const res = await callHostAction('apply-update', { force }, 30000);
+    if (res?.ok && res.updated) {
+      updateState.status = 'updated';
+      updateState.latestTag = res.tag || WIDGET_VERSION;
+      localSet('ag-periodic-last-update-check', String(Date.now()));
+      refreshUpdateButton();
+      scheduleUpdateReset(5000);
+    } else if (res?.ok && res.alreadyLatest) {
+      updateState.status = 'latest';
+      updateState.latestTag = res.latestTag || WIDGET_VERSION;
+      localSet('ag-periodic-last-update-check', String(Date.now()));
+      refreshUpdateButton();
+      scheduleUpdateReset(3500);
+    } else {
+      updateState.status = 'error';
+      updateState.error = res?.error || 'GitHub unreachable';
+      refreshUpdateButton();
+      scheduleUpdateReset(4500);
+    }
+  }
 
   function isDarkTheme() {
     if (state.themeMode === 'dark') return true;
@@ -895,6 +1043,7 @@ module.exports = function installAgPeriodicSelector() {
     state.open = false;
     state.selectedElementNum = null;
     state.hoveredElementNum = null;
+    stopResizeTracking();
     if (!state.busy && !state.pendingApply) {
       closeNativeMenuIfOpen();
     }
@@ -949,9 +1098,12 @@ module.exports = function installAgPeriodicSelector() {
       }
       .popover {
         position: fixed; pointer-events: auto;
+        container-type: inline-size;
         width: min(796px, calc(100vw - 24px));
-        max-height: calc(100vh - 28px);
+        max-width: calc(100vw - 16px);
+        max-height: calc(100vh - 24px);
         overflow-y: auto;
+        overflow-x: hidden;
         background: ${bg}; color: ${fg};
         border: 1px solid ${border};
         border-radius: 18px;
@@ -1302,10 +1454,107 @@ module.exports = function installAgPeriodicSelector() {
       .strip-pill.active { border-color: #34D399; background: rgba(52, 211, 153, 0.16); }
       .footer {
         position: relative; z-index: 1;
-        display: flex; align-items: center; justify-content: space-between;
+        display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;
         font-size: 10.5px; color: ${muted}; margin-top: 8px;
       }
+      .footer-tip { min-width: 0; flex: 1; }
+      .footer-right { display: inline-flex; align-items: center; gap: 7px; flex-shrink: 0; }
+      .ver-tag { font-variant-numeric: tabular-nums; opacity: 0.85; font-weight: 600; }
+      .update-btn {
+        border: 1px solid ${border}; background: ${cardBg}; color: ${muted};
+        border-radius: 99px; padding: 2px 9px; font-size: 10px; font-weight: 650;
+        cursor: pointer; transition: all 140ms ease; white-space: nowrap;
+        display: inline-flex; align-items: center; gap: 4px;
+      }
+      .update-btn:hover:not(:disabled) {
+        color: ${fg}; border-color: #4F7DF3;
+        background: ${dark ? 'rgba(79,125,243,0.16)' : 'rgba(79,125,243,0.09)'};
+      }
+      .update-btn:disabled { opacity: 0.7; cursor: wait; }
+      .update-btn.has-update {
+        color: ${dark ? '#6EE7B7' : '#047857'};
+        border-color: rgba(52, 211, 153, 0.55);
+        background: rgba(52, 211, 153, ${dark ? '0.16' : '0.13'});
+        box-shadow: 0 0 10px rgba(52, 211, 153, 0.22);
+      }
+      .update-btn.is-ok {
+        color: ${dark ? '#6EE7B7' : '#047857'};
+        border-color: rgba(52, 211, 153, 0.45);
+      }
+      .update-btn.is-err {
+        color: ${dark ? '#FCA5A5' : '#B91C1C'};
+        border-color: rgba(239, 68, 68, 0.45);
+      }
       .empty-msg { padding: 10px; text-align: center; font-size: 12px; color: ${muted}; }
+
+      /* Responsive width scaling when Antigravity window or split pane narrows */
+      @media (max-width: 724px) {
+        .popover { padding: 12px 13px 10px; }
+      }
+      @media (max-width: 564px) {
+        .popover { padding: 10px 10px 9px; border-radius: 14px; }
+      }
+      @container (max-width: 700px) {
+        .header { margin-bottom: 8px; gap: 8px; }
+        .grid { gap: 2.5px; margin-bottom: 9px; }
+        .cell { min-height: 31px; border-radius: 6px; }
+        .cell .num { font-size: 6.5px; left: 2.5px; top: 1.5px; }
+        .cell .sym { font-size: 11.5px; margin-top: 2px; }
+        .cell .name { font-size: 6.5px; }
+        .basin-hud { padding: 4px 7px; gap: 3px; }
+        .basin-chip { padding: 3px 5px; font-size: 9.5px; }
+        .bc-sym { font-size: 10.5px; }
+        .bc-name { display: none; }
+        .spotlight { padding: 10px 11px; gap: 8px; }
+        .spot-tile { width: 44px; height: 44px; }
+        .spot-tile .t-sym { font-size: 16px; }
+        .effort-dock { padding: 8px 11px; gap: 10px; }
+        .ef-slider-col { width: 204px; flex: 0 1 204px; }
+      }
+      @container (max-width: 540px) {
+        .header { margin-bottom: 7px; }
+        .subtitle { display: none; }
+        .grid { gap: 2px; margin-bottom: 8px; }
+        .cell { min-height: 26px; border-radius: 5px; padding: 1px; }
+        .cell .num { display: none; }
+        .cell .sym { font-size: 10px; margin-top: 0; }
+        .cell .name { display: none; }
+        .cell.active::after { width: 4px; height: 4px; top: 2px; right: 2px; }
+        .basin-hud { padding: 3px 5px; }
+        .basin-label { font-size: 7.5px; }
+        .basin-chips { gap: 3px; }
+        .basin-chip { padding: 2px 3px; justify-content: center; }
+        .bc-sym { font-size: 9.5px; }
+        .spot-tile { width: 38px; height: 38px; border-radius: 9px; }
+        .spot-tile .t-num, .spot-tile .t-mass { display: none; }
+        .spot-tile .t-sym { font-size: 14px; margin-top: 0; }
+        .spot-title { font-size: 12px; }
+        .spot-desc { font-size: 10.5px; }
+        .effort-dock { padding: 7px 10px; gap: 8px; }
+        .ef-slider-col { width: 100%; flex: 1 1 100%; }
+      }
+
+      /* Responsive vertical tightening when Antigravity window height shrinks */
+      .popover[data-compact-h="1"] { padding: 11px 14px 9px; }
+      .popover[data-compact-h="1"] .header { margin-bottom: 7px; }
+      .popover[data-compact-h="1"] .grid { gap: 2.5px; margin-bottom: 8px; }
+      .popover[data-compact-h="1"] .cell { min-height: 30px; }
+      .popover[data-compact-h="1"] .cell .sym { font-size: 12px; }
+      .popover[data-compact-h="1"] .spotlight { padding: 9px 11px; gap: 7px; margin-bottom: 6px; }
+      .popover[data-compact-h="1"] .spot-tile { width: 42px; height: 42px; }
+      .popover[data-compact-h="1"] .effort-dock { padding: 7px 11px; }
+
+      .popover[data-compact-h="2"] { padding: 9px 12px 8px; }
+      .popover[data-compact-h="2"] .header { margin-bottom: 5px; }
+      .popover[data-compact-h="2"] .subtitle { display: none; }
+      .popover[data-compact-h="2"] .grid { gap: 2px; margin-bottom: 6px; }
+      .popover[data-compact-h="2"] .cell { min-height: 25px; }
+      .popover[data-compact-h="2"] .cell .sym { font-size: 10.5px; margin-top: 1px; }
+      .popover[data-compact-h="2"] .cell .name { display: none; }
+      .popover[data-compact-h="2"] .spotlight { padding: 8px 10px; gap: 6px; margin-bottom: 5px; }
+      .popover[data-compact-h="2"] .spot-tile { width: 38px; height: 38px; }
+      .popover[data-compact-h="2"] .effort-dock { padding: 6px 10px; }
+      .popover[data-compact-h="2"] .footer { margin-top: 5px; }
     `;
   }
 
@@ -1317,39 +1566,108 @@ module.exports = function installAgPeriodicSelector() {
     if (!popoverEl) return;
     const vw = window.innerWidth;
     const vh = window.innerHeight;
-    // Use offsetWidth/offsetHeight (unscaled layout size), NEVER getBoundingClientRect() which is shrunk by scale(0.26) at animation start!
-    const pw = popoverEl.offsetWidth || Math.min(796, vw - 24);
-    const ph = popoverEl.offsetHeight || 430;
-    const rect = trigger && trigger.isConnected ? trigger.getBoundingClientRect() : null;
+    const margin = vw < 480 ? 8 : 12;
+    const targetWidth = Math.max(260, Math.min(796, vw - margin * 2));
+    popoverEl.style.width = targetWidth + 'px';
 
-    let vx = Math.max(12, Math.round((vw - pw) / 2));
+    const pw = targetWidth;
+    const rect = trigger && trigger.isConnected && hasBox(trigger) ? trigger.getBoundingClientRect() : null;
+
     if (!rect) {
+      const vx = Math.max(margin, Math.round((vw - pw) / 2));
+      const availableH = Math.max(120, vh - margin * 2);
       popoverEl.style.left = vx + 'px';
-      popoverEl.style.bottom = '64px';
+      popoverEl.style.bottom = margin + 'px';
       popoverEl.style.top = 'auto';
+      popoverEl.style.maxHeight = availableH + 'px';
+      popoverEl.dataset.compactH = availableH < 430 ? '2' : (availableH < 520 ? '1' : '0');
+      popoverEl.style.setProperty('--origin-x', `${Math.round(pw / 2)}px`);
+      popoverEl.style.setProperty('--origin-y', '100%');
       return;
     }
 
-    vx = Math.max(12, Math.min(vw - pw - 12, Math.round(rect.left)));
+    const vx = Math.max(margin, Math.min(vw - pw - margin, Math.round(rect.left)));
     popoverEl.style.left = vx + 'px';
     const originX = Math.max(24, Math.min(pw - 24, Math.round((rect.left + rect.width / 2) - vx)));
 
-    if (rect.top >= 260) {
+    const spaceAbove = Math.max(0, Math.round(rect.top - margin - 8));
+    const spaceBelow = Math.max(0, Math.round(vh - rect.bottom - margin - 8));
+    let availableH = Math.max(120, vh - margin * 2);
+
+    if (spaceAbove >= spaceBelow && spaceAbove >= 200) {
       // Anchor bottom edge 8px above the model selector trigger so it NEVER gets cut off at the bottom!
-      const bottomOffset = Math.max(12, Math.round(vh - rect.top + 8));
+      const bottomOffset = Math.max(margin, Math.round(vh - rect.top + 8));
+      availableH = Math.max(120, Math.min(vh - margin * 2, spaceAbove));
       popoverEl.style.bottom = bottomOffset + 'px';
       popoverEl.style.top = 'auto';
-      popoverEl.style.maxHeight = Math.max(240, Math.round(rect.top - 20)) + 'px';
+      popoverEl.style.maxHeight = availableH + 'px';
       popoverEl.style.setProperty('--origin-x', `${originX}px`);
       popoverEl.style.setProperty('--origin-y', '100%');
-    } else {
-      const topOffset = Math.max(12, Math.round(rect.bottom + 8));
+    } else if (spaceBelow >= 200) {
+      const topOffset = Math.max(margin, Math.round(rect.bottom + 8));
+      availableH = Math.max(120, Math.min(vh - margin * 2, spaceBelow));
       popoverEl.style.top = topOffset + 'px';
       popoverEl.style.bottom = 'auto';
-      popoverEl.style.maxHeight = Math.max(240, Math.round(vh - rect.bottom - 20)) + 'px';
+      popoverEl.style.maxHeight = availableH + 'px';
       popoverEl.style.setProperty('--origin-x', `${originX}px`);
       popoverEl.style.setProperty('--origin-y', '0%');
+    } else {
+      // Very short window: pin cleanly inside viewport bounds so nothing clips off-screen
+      availableH = Math.max(120, vh - margin * 2);
+      popoverEl.style.top = margin + 'px';
+      popoverEl.style.bottom = 'auto';
+      popoverEl.style.maxHeight = availableH + 'px';
+      popoverEl.style.setProperty('--origin-x', `${originX}px`);
+      popoverEl.style.setProperty('--origin-y', '50%');
     }
+
+    popoverEl.dataset.compactH = availableH < 430 ? '2' : (availableH < 520 ? '1' : '0');
+  }
+
+  let resizeRaf = 0;
+  let resizeObserver = null;
+  let resizeListenersActive = false;
+
+  function scheduleReposition() {
+    if (!state.open || state.closing) return;
+    if (resizeRaf) cancelAnimationFrame(resizeRaf);
+    resizeRaf = requestAnimationFrame(() => {
+      resizeRaf = 0;
+      if (!state.open || state.closing) return;
+      const pop = shadowRoot?.querySelector('.popover');
+      if (pop) positionPopover(pop, getLiveTrigger());
+    });
+  }
+
+  function startResizeTracking() {
+    if (!resizeListenersActive) {
+      resizeListenersActive = true;
+      window.addEventListener('resize', scheduleReposition, { passive: true });
+      try { window.visualViewport?.addEventListener('resize', scheduleReposition, { passive: true }); } catch {}
+    }
+    if (typeof ResizeObserver === 'function') {
+      try {
+        resizeObserver?.disconnect();
+        resizeObserver = new ResizeObserver(scheduleReposition);
+        if (document.documentElement) resizeObserver.observe(document.documentElement);
+        const trig = getLiveTrigger();
+        if (trig?.parentElement) resizeObserver.observe(trig.parentElement);
+      } catch {}
+    }
+  }
+
+  function stopResizeTracking() {
+    if (resizeRaf) {
+      cancelAnimationFrame(resizeRaf);
+      resizeRaf = 0;
+    }
+    if (resizeListenersActive) {
+      resizeListenersActive = false;
+      window.removeEventListener('resize', scheduleReposition);
+      try { window.visualViewport?.removeEventListener('resize', scheduleReposition); } catch {}
+    }
+    try { resizeObserver?.disconnect(); } catch {}
+    resizeObserver = null;
   }
 
   function syncActiveStatesInPlace() {
@@ -1697,15 +2015,22 @@ module.exports = function installAgPeriodicSelector() {
         ${legacyHtml}
         ${nonGoogleHtml}
         <div class="footer">
-          <span>${escapeHtml(t('tip'))}</span>
-          <span>v1.2</span>
+          <span class="footer-tip">${escapeHtml(t('tip'))}</span>
+          <div class="footer-right">
+            <span class="ver-tag">${WIDGET_VERSION}</span>
+            ${(() => {
+              const uv = getUpdateButtonView();
+              return `<button type="button" class="update-btn ${uv.cls}" data-action="update-plugin" ${uv.disabled ? 'disabled' : ''} title="${escapeHtml(uv.title)}">${escapeHtml(uv.text)}</button>`;
+            })()}
+          </div>
         </div>
       </div>
     `;
 
     updateSpotlight(byAtomic, activeNum);
     const popoverEl = shadowRoot.querySelector('.popover');
-    positionPopover(popoverEl, state.activeTrigger);
+    positionPopover(popoverEl, getLiveTrigger());
+    startResizeTracking();
     if (!skipAnim && popoverEl) {
       // Force initial layout at scale(0.84) before transitioning to .is-open on next frame
       void popoverEl.offsetHeight;
@@ -1716,6 +2041,10 @@ module.exports = function installAgPeriodicSelector() {
 
     shadowRoot.querySelector('[data-action="close"]')?.addEventListener('click', () => closePeriodic(false));
     shadowRoot.querySelector('[data-action="show-native"]')?.addEventListener('click', () => closePeriodic(true));
+    shadowRoot.querySelector('[data-action="update-plugin"]')?.addEventListener('click', ev => {
+      void handleOneClickUpdate(Boolean(ev.shiftKey));
+    });
+    setTimeout(() => { if (state.open) void checkUpdateInBackground(); }, 450);
     shadowRoot.querySelector('[data-table="compact"]')?.addEventListener('click', () => {
       if (!state.fullTable) return;
       state.fullTable = false;
@@ -1952,6 +2281,10 @@ module.exports = function installAgPeriodicSelector() {
 
   window.__agPeriodicDispose = () => {
     if (state.closeTimer) clearTimeout(state.closeTimer);
+    if (updateResetTimer) clearTimeout(updateResetTimer);
+    for (const item of hostPending.values()) clearTimeout(item.timer);
+    hostPending.clear();
+    stopResizeTracking();
     cancelPendingDebounce();
     state.pendingApply = null;
     state.openSessionId++;
