@@ -47,6 +47,8 @@
       border-radius: 8px; padding: 4px 10px; font-size: 11px; font-weight: 600; cursor: pointer;
     }
     .btn:hover { border-color: #60a5fa; }
+    .btn.update-ready { border-color: #34d399; color: #34d399; }
+    .btn:disabled { opacity: 0.6; cursor: wait; }
     .grid {
       display: grid; grid-template-columns: repeat(18, minmax(0, 1fr));
       gap: 3px; margin-bottom: 12px;
@@ -93,6 +95,7 @@
     </div>
     <div class="controls">
       <span class="pill"><span class="dot" id="statusDot"></span><span id="statusText">检测中...</span></span>
+      <button class="btn" id="updateBtn" title="从 GitHub 检查并一键更新（按住 Shift 点击强制覆盖同步）">↻ 一键更新</button>
       <button class="btn" id="toggleTable">全表 (118)</button>
       <button class="btn" id="toggleLang">EN</button>
     </div>
@@ -173,11 +176,58 @@
       }
     }
 
+    const updateBtn = document.getElementById('updateBtn');
+    let updateBusy = false;
+    async function checkUpdateQuiet() {
+      try {
+        const res = await fetch('/api/check-update');
+        const data = await res.json();
+        if (data?.ok && data.hasUpdate && !updateBusy) {
+          updateBtn.classList.add('update-ready');
+          updateBtn.textContent = lang === 'zh' ? `⬇ 更新至 ${data.latestTag}` : `⬇ Update ${data.latestTag}`;
+        }
+      } catch {}
+    }
+    updateBtn.addEventListener('click', async ev => {
+      if (updateBusy) return;
+      updateBusy = true;
+      updateBtn.disabled = true;
+      updateBtn.textContent = lang === 'zh' ? '↻ 更新中...' : '↻ Updating...';
+      try {
+        const force = ev.shiftKey ? '?force=1' : '';
+        const res = await fetch('/api/apply-update' + force, {
+          method: 'POST',
+          headers: { 'X-AG-Periodic-Action': '1' },
+        });
+        const data = await res.json();
+        if (data?.ok && data.updated) {
+          updateBtn.classList.remove('update-ready');
+          updateBtn.textContent = lang === 'zh' ? `✓ 已更新 ${data.tag}` : `✓ Updated ${data.tag}`;
+          setTimeout(() => location.reload(), 1200);
+        } else if (data?.ok && data.alreadyLatest) {
+          updateBtn.classList.remove('update-ready');
+          updateBtn.textContent = lang === 'zh' ? `✓ 已是最新 (${data.tag})` : `✓ Latest (${data.tag})`;
+          setTimeout(() => { updateBtn.textContent = lang === 'zh' ? '↻ 一键更新' : '↻ Update'; }, 3000);
+        } else {
+          updateBtn.textContent = lang === 'zh' ? '⚠ 更新失败' : '⚠ Failed';
+          updateBtn.title = data?.error || 'GitHub unreachable';
+          setTimeout(() => { updateBtn.textContent = lang === 'zh' ? '↻ 一键更新' : '↻ Update'; }, 3500);
+        }
+      } catch {
+        updateBtn.textContent = lang === 'zh' ? '⚠ 连接失败' : '⚠ Offline';
+        setTimeout(() => { updateBtn.textContent = lang === 'zh' ? '↻ 一键更新' : '↻ Update'; }, 3500);
+      } finally {
+        updateBusy = false;
+        updateBtn.disabled = false;
+      }
+    });
+
     document.getElementById('toggleTable').addEventListener('click', () => { fullTable = !fullTable; render(); });
     document.getElementById('toggleLang').addEventListener('click', () => { lang = lang === 'zh' ? 'en' : 'zh'; render(); });
 
     render();
     pollStatus();
+    checkUpdateQuiet();
     setInterval(pollStatus, 4000);
   </script>
 </body>
