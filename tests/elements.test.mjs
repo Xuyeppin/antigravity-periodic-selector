@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildInjectedSource } from '../compat/runtime-ui.mjs';
+import { compareSemver, formatTag, UPDATE_FILES } from '../compat/updater.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, '..');
@@ -76,4 +77,16 @@ test('Injected renderer bundle has valid JavaScript syntax', () => {
   assert.ok(bundle.includes('__agPeriodicElementsFactory'));
   // Validate JS syntax via Function constructor (does not execute)
   assert.doesNotThrow(() => new Function(bundle));
+});
+
+test('GitHub updater semver comparison and allowlist integrity', () => {
+  assert.equal(compareSemver('1.3.0', '1.2.0'), 1);
+  assert.equal(compareSemver('v1.3', '1.3.0'), 0);
+  assert.equal(compareSemver('v1.2.1', '1.3.0'), -1);
+  assert.equal(compareSemver('2.0.0', '1.9.9'), 1);
+  assert.equal(formatTag('1.3.0'), 'v1.3');
+  assert.equal(formatTag('1.3.2'), 'v1.3.2');
+  assert.ok(UPDATE_FILES.includes('compat/periodic-widget.cjs'));
+  assert.ok(UPDATE_FILES.includes('compat/updater.mjs'));
+  assert.ok(UPDATE_FILES.every(p => !p.includes('..') && !p.startsWith('/')));
 });
