@@ -1,4 +1,4 @@
-// Self-contained main-world UI for Antigravity Periodic Model Selector (v1.3).
+// Self-contained main-world UI for Antigravity Periodic Model Selector (v1.3.1).
 // - Periodic Basin HUD in the natural valley (cols 4-11, rows 1-2) for instant side-by-side comparison
 // - Scientific atomic mass & electron configuration badges in the Element Spotlight plaque
 // - Integrated 2-tier Spotlight + Gliding Circular White Thumb Slider:
@@ -18,7 +18,7 @@ module.exports = function installAgPeriodicSelector() {
 
   const HOST_ID = 'ag-periodic-selector-host';
   const HIDE_STYLE_ID = 'ag-periodic-hide-native-menus';
-  const WIDGET_VERSION = 'v1.3';
+  const WIDGET_VERSION = 'v1.3.1';
   const GITHUB_RELEASES_URL = 'https://github.com/Xuyeppin/antigravity-periodic-selector/releases/latest';
 
   const CATEGORY_TINT = {
@@ -1487,13 +1487,9 @@ module.exports = function installAgPeriodicSelector() {
       }
       .empty-msg { padding: 10px; text-align: center; font-size: 12px; color: ${muted}; }
 
-      /* Responsive width scaling when Antigravity window or split pane narrows */
-      @media (max-width: 724px) {
-        .popover { padding: 12px 13px 10px; }
-      }
-      @media (max-width: 564px) {
-        .popover { padding: 10px 10px 9px; border-radius: 14px; }
-      }
+      /* Responsive width scaling when Antigravity window or sidebars narrow the chat pane */
+      .popover[data-compact-w="1"] { padding: 12px 13px 10px; }
+      .popover[data-compact-w="2"] { padding: 10px 10px 9px; border-radius: 14px; }
       @container (max-width: 700px) {
         .header { margin-bottom: 8px; gap: 8px; }
         .grid { gap: 2.5px; margin-bottom: 9px; }
@@ -1562,19 +1558,69 @@ module.exports = function installAgPeriodicSelector() {
     return String(s || '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   }
 
+  function getAvailableHorizontalBounds(trigger) {
+    const vw = window.innerWidth;
+    const margin = vw < 480 ? 8 : 12;
+    let safeLeft = margin;
+    let safeRight = vw - margin;
+
+    const trigRect = trigger && trigger.isConnected && hasBox(trigger) ? trigger.getBoundingClientRect() : null;
+    const trigCenterX = trigRect ? (trigRect.left + trigRect.width / 2) : (vw / 2);
+
+    // 1. Respect native Electron WebContentsView / browser-hole overlays (they render above all DOM z-index)
+    const holes = document.querySelectorAll('[data-browser-hole="true"], [data-wcv-proxy="true"], [data-has-browser-hole="true"], webview');
+    for (const h of holes) {
+      if (!h.isConnected) continue;
+      const r = h.getBoundingClientRect();
+      if (r.width < 40 || r.height < 40) continue;
+      if (trigCenterX <= r.left + 8) {
+        safeRight = Math.min(safeRight, Math.floor(r.left) - 8);
+      } else if (trigCenterX >= r.right - 8) {
+        safeLeft = Math.max(safeLeft, Math.ceil(r.right) + 8);
+      }
+    }
+
+    // 2. Respect the chat pane bounds (adapts automatically to both right browser pane AND HTML sidebars)
+    let paneLeft = safeLeft;
+    let paneRight = safeRight;
+    const chatPane = trigger?.closest?.('[data-testid="conversation-view"], [data-testid="overview-panel-host"]');
+    if (chatPane && chatPane.isConnected && hasBox(chatPane)) {
+      const pr = chatPane.getBoundingClientRect();
+      if (pr.width >= 240) {
+        paneLeft = Math.max(safeLeft, Math.ceil(pr.left) + 8);
+        paneRight = Math.min(safeRight, Math.floor(pr.right) - 8);
+      }
+    }
+
+    // Prefer fitting completely inside the chat column; if chat column becomes very narrow (<480px),
+    // borrow available HTML space to the left while strictly respecting native browser-hole boundaries.
+    const paneSpan = Math.max(0, paneRight - paneLeft);
+    let minLeft = paneLeft;
+    let maxRight = paneRight;
+    if (paneSpan < 480 && (paneRight - safeLeft) > paneSpan) {
+      minLeft = Math.max(safeLeft, paneRight - 480);
+    }
+    if (maxRight - minLeft < 260) {
+      minLeft = safeLeft;
+      maxRight = Math.max(safeLeft + 260, safeRight);
+    }
+    return { vw, margin, minLeft, maxRight };
+  }
+
   function positionPopover(popoverEl, trigger) {
     if (!popoverEl) return;
-    const vw = window.innerWidth;
     const vh = window.innerHeight;
-    const margin = vw < 480 ? 8 : 12;
-    const targetWidth = Math.max(260, Math.min(796, vw - margin * 2));
+    const { vw, margin, minLeft, maxRight } = getAvailableHorizontalBounds(trigger);
+    const availableW = Math.max(260, maxRight - minLeft);
+    const targetWidth = Math.max(260, Math.min(796, availableW));
     popoverEl.style.width = targetWidth + 'px';
+    popoverEl.dataset.compactW = targetWidth <= 540 ? '2' : (targetWidth <= 700 ? '1' : '0');
 
     const pw = targetWidth;
     const rect = trigger && trigger.isConnected && hasBox(trigger) ? trigger.getBoundingClientRect() : null;
 
     if (!rect) {
-      const vx = Math.max(margin, Math.round((vw - pw) / 2));
+      const vx = Math.max(minLeft, Math.round(minLeft + (availableW - pw) / 2));
       const availableH = Math.max(120, vh - margin * 2);
       popoverEl.style.left = vx + 'px';
       popoverEl.style.bottom = margin + 'px';
@@ -1586,7 +1632,7 @@ module.exports = function installAgPeriodicSelector() {
       return;
     }
 
-    const vx = Math.max(margin, Math.min(vw - pw - margin, Math.round(rect.left)));
+    const vx = Math.max(minLeft, Math.min(maxRight - pw, Math.round(rect.left)));
     popoverEl.style.left = vx + 'px';
     const originX = Math.max(24, Math.min(pw - 24, Math.round((rect.left + rect.width / 2) - vx)));
 
@@ -1649,9 +1695,20 @@ module.exports = function installAgPeriodicSelector() {
       try {
         resizeObserver?.disconnect();
         resizeObserver = new ResizeObserver(scheduleReposition);
-        if (document.documentElement) resizeObserver.observe(document.documentElement);
+        const targets = new Set();
+        if (document.documentElement) targets.add(document.documentElement);
         const trig = getLiveTrigger();
-        if (trig?.parentElement) resizeObserver.observe(trig.parentElement);
+        if (trig) {
+          const chatPane = trig.closest('[data-testid="conversation-view"], [data-testid="overview-panel-host"]');
+          const inputBox = trig.closest('[data-testid="agent-input-box"]');
+          if (chatPane) targets.add(chatPane);
+          if (inputBox) targets.add(inputBox);
+          if (trig.parentElement) targets.add(trig.parentElement);
+        }
+        for (const h of document.querySelectorAll('[data-browser-hole="true"], [data-wcv-proxy="true"]')) {
+          if (h.isConnected) targets.add(h);
+        }
+        for (const el of targets) resizeObserver.observe(el);
       } catch {}
     }
   }
