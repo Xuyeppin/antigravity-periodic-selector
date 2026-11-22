@@ -1,4 +1,4 @@
-// Self-contained main-world UI for Antigravity Periodic Model Selector (v1.3.1).
+// Self-contained main-world UI for Antigravity Periodic Model Selector (v1.3.2).
 // - Periodic Basin HUD in the natural valley (cols 4-11, rows 1-2) for instant side-by-side comparison
 // - Scientific atomic mass & electron configuration badges in the Element Spotlight plaque
 // - Integrated 2-tier Spotlight + Gliding Circular White Thumb Slider:
@@ -18,7 +18,7 @@ module.exports = function installAgPeriodicSelector() {
 
   const HOST_ID = 'ag-periodic-selector-host';
   const HIDE_STYLE_ID = 'ag-periodic-hide-native-menus';
-  const WIDGET_VERSION = 'v1.3.1';
+  const WIDGET_VERSION = 'v1.3.2';
   const GITHUB_RELEASES_URL = 'https://github.com/Xuyeppin/antigravity-periodic-selector/releases/latest';
 
   const CATEGORY_TINT = {
@@ -2153,41 +2153,79 @@ module.exports = function installAgPeriodicSelector() {
       await applyModelAndEffort(primary, desiredEffort, seq);
     };
 
+    const setHoveredElement = num => {
+      if (state.hoveredElementNum === num) return;
+      state.hoveredElementNum = num;
+      const curA = E.parseModelInfo(state.currentLabel).element?.number || null;
+      updateSpotlight(byAtomic, curA);
+    };
+
+    const gridEl = shadowRoot.querySelector('.grid');
+    const hoverTargets = Array.from(shadowRoot.querySelectorAll('.cell, .basin-chip')).map(el => ({
+      el,
+      num: Number(el.dataset.num || el.dataset.basinNum),
+    }));
+
+    // Split ONLY the narrow gap between adjacent elements 50/50; any open blank area returns to the active model
+    gridEl?.addEventListener('mousemove', ev => {
+      const direct = ev.target?.closest?.('.cell, .basin-chip');
+      if (direct) {
+        const directNum = Number(direct.dataset.num || direct.dataset.basinNum);
+        if (directNum) setHoveredElement(directNum);
+        return;
+      }
+      const x = ev.clientX;
+      const y = ev.clientY;
+      const MAX_GAP = 7; // slightly above max CSS gap (5px basin-chips / 3.5px cells)
+      let hasLeft = false;
+      let hasRight = false;
+      let hasTop = false;
+      let hasBottom = false;
+      let bestNum = null;
+      let bestDistSq = MAX_GAP * MAX_GAP;
+
+      for (const item of hoverTargets) {
+        const r = item.el.getBoundingClientRect();
+        const dx = x < r.left ? r.left - x : (x > r.right ? x - r.right : 0);
+        const dy = y < r.top ? r.top - y : (y > r.bottom ? y - r.bottom : 0);
+        if (dx > MAX_GAP || dy > MAX_GAP) continue;
+
+        if (y >= r.top - MAX_GAP && y <= r.bottom + MAX_GAP) {
+          if (x >= r.right && x - r.right <= MAX_GAP) hasLeft = true;
+          if (x <= r.left && r.left - x <= MAX_GAP) hasRight = true;
+        }
+        if (x >= r.left - MAX_GAP && x <= r.right + MAX_GAP) {
+          if (y >= r.bottom && y - r.bottom <= MAX_GAP) hasTop = true;
+          if (y <= r.top && r.top - y <= MAX_GAP) hasBottom = true;
+        }
+
+        const d2 = dx * dx + dy * dy;
+        if (d2 < bestDistSq) {
+          bestDistSq = d2;
+          bestNum = item.num;
+        }
+      }
+
+      if (((hasLeft && hasRight) || (hasTop && hasBottom)) && bestNum !== null) {
+        setHoveredElement(bestNum);
+      } else {
+        setHoveredElement(null);
+      }
+    }, { passive: true });
+
+    gridEl?.addEventListener('mouseleave', () => {
+      setHoveredElement(null);
+    });
+
     for (const chip of shadowRoot.querySelectorAll('.basin-chip')) {
       const num = Number(chip.dataset.basinNum);
-      chip.addEventListener('mouseenter', () => {
-        if (state.hoveredElementNum !== num) {
-          state.hoveredElementNum = num;
-          const curA = E.parseModelInfo(state.currentLabel).element?.number || null;
-          updateSpotlight(byAtomic, curA);
-        }
-      });
-      chip.addEventListener('mouseleave', () => {
-        if (state.hoveredElementNum === num) {
-          state.hoveredElementNum = null;
-          const curA = E.parseModelInfo(state.currentLabel).element?.number || null;
-          updateSpotlight(byAtomic, curA);
-        }
-      });
+      chip.addEventListener('mouseenter', () => setHoveredElement(num));
       chip.addEventListener('click', () => void selectElementNum(num));
     }
 
     for (const cell of shadowRoot.querySelectorAll('.cell')) {
       const num = Number(cell.dataset.num);
-      cell.addEventListener('mouseenter', () => {
-        if (state.hoveredElementNum !== num) {
-          state.hoveredElementNum = num;
-          const curA = E.parseModelInfo(state.currentLabel).element?.number || null;
-          updateSpotlight(byAtomic, curA);
-        }
-      });
-      cell.addEventListener('mouseleave', () => {
-        if (state.hoveredElementNum === num) {
-          state.hoveredElementNum = null;
-          const curA = E.parseModelInfo(state.currentLabel).element?.number || null;
-          updateSpotlight(byAtomic, curA);
-        }
-      });
+      cell.addEventListener('mouseenter', () => setHoveredElement(num));
       cell.addEventListener('click', () => void selectElementNum(num));
     }
 
