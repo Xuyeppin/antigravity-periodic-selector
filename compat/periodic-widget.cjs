@@ -1,4 +1,4 @@
-// Self-contained main-world UI for Antigravity Periodic Model Selector (v1.3.2).
+// Self-contained main-world UI for Antigravity Periodic Model Selector (v1.3.3).
 // - Periodic Basin HUD in the natural valley (cols 4-11, rows 1-2) for instant side-by-side comparison
 // - Scientific atomic mass & electron configuration badges in the Element Spotlight plaque
 // - Integrated 2-tier Spotlight + Gliding Circular White Thumb Slider:
@@ -18,7 +18,7 @@ module.exports = function installAgPeriodicSelector() {
 
   const HOST_ID = 'ag-periodic-selector-host';
   const HIDE_STYLE_ID = 'ag-periodic-hide-native-menus';
-  const WIDGET_VERSION = 'v1.3.2';
+  const WIDGET_VERSION = 'v1.3.3';
   const GITHUB_RELEASES_URL = 'https://github.com/Xuyeppin/antigravity-periodic-selector/releases/latest';
 
   const CATEGORY_TINT = {
@@ -2166,7 +2166,8 @@ module.exports = function installAgPeriodicSelector() {
       num: Number(el.dataset.num || el.dataset.basinNum),
     }));
 
-    // Split ONLY the narrow gap between adjacent elements 50/50; any open blank area returns to the active model
+    // Split ONLY the narrow gap between adjacent elements (horizontal, vertical & inner corners) 50/50;
+    // any open blank area (valley, basin padding, lanthanide blank slot, bottom-left corner) returns to the active model.
     gridEl?.addEventListener('mousemove', ev => {
       const direct = ev.target?.closest?.('.cell, .basin-chip');
       if (direct) {
@@ -2176,28 +2177,47 @@ module.exports = function installAgPeriodicSelector() {
       }
       const x = ev.clientX;
       const y = ev.clientY;
-      const MAX_GAP = 7; // slightly above max CSS gap (5px basin-chips / 3.5px cells)
+      const MAX_GAP_X = 9;  // covers 3.5px cell gaps & 5px basin-chip gaps + hover scale
+      const MAX_GAP_Y = 11; // covers 3.5px row gaps & 7.01px row7-to-row9 lanthanide gap + translateY(-2px)
+      const ALIGN_TOL = 1.5; // absorbs subpixel / scale(1.08) edge offset between vertically/horizontally aligned neighbors
       let hasLeft = false;
       let hasRight = false;
       let hasTop = false;
       let hasBottom = false;
+      let hasTL = false;
+      let hasTR = false;
+      let hasBL = false;
+      let hasBR = false;
       let bestNum = null;
-      let bestDistSq = MAX_GAP * MAX_GAP;
+      let bestDistSq = MAX_GAP_Y * MAX_GAP_Y + MAX_GAP_X * MAX_GAP_X;
 
       for (const item of hoverTargets) {
         const r = item.el.getBoundingClientRect();
         const dx = x < r.left ? r.left - x : (x > r.right ? x - r.right : 0);
         const dy = y < r.top ? r.top - y : (y > r.bottom ? y - r.bottom : 0);
-        if (dx > MAX_GAP || dy > MAX_GAP) continue;
 
-        if (y >= r.top - MAX_GAP && y <= r.bottom + MAX_GAP) {
-          if (x >= r.right && x - r.right <= MAX_GAP) hasLeft = true;
-          if (x <= r.left && r.left - x <= MAX_GAP) hasRight = true;
+        // Inside cell/chip bounding rect (e.g. border-radius rounded corner): keep that element!
+        if (dx === 0 && dy === 0) {
+          setHoveredElement(item.num);
+          return;
         }
-        if (x >= r.left - MAX_GAP && x <= r.right + MAX_GAP) {
-          if (y >= r.bottom && y - r.bottom <= MAX_GAP) hasTop = true;
-          if (y <= r.top && r.top - y <= MAX_GAP) hasBottom = true;
+        if (dx > MAX_GAP_X || dy > MAX_GAP_Y) continue;
+
+        const cx = (r.left + r.right) * 0.5;
+        const cy = (r.top + r.bottom) * 0.5;
+
+        if (dy <= ALIGN_TOL) {
+          if (cx < x) hasLeft = true;
+          if (cx > x) hasRight = true;
         }
+        if (dx <= ALIGN_TOL) {
+          if (cy < y) hasTop = true;
+          if (cy > y) hasBottom = true;
+        }
+        if (cx < x && cy < y) hasTL = true;
+        if (cx > x && cy < y) hasTR = true;
+        if (cx < x && cy > y) hasBL = true;
+        if (cx > x && cy > y) hasBR = true;
 
         const d2 = dx * dx + dy * dy;
         if (d2 < bestDistSq) {
@@ -2206,7 +2226,12 @@ module.exports = function installAgPeriodicSelector() {
         }
       }
 
-      if (((hasLeft && hasRight) || (hasTop && hasBottom)) && bestNum !== null) {
+      const inBridge = (hasLeft && hasRight)
+        || (hasTop && hasBottom)
+        || (hasTL && hasBR)
+        || (hasTR && hasBL);
+
+      if (inBridge && bestNum !== null) {
         setHoveredElement(bestNum);
       } else {
         setHoveredElement(null);
