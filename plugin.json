@@ -2,6 +2,6 @@
   "name": "antigravity-periodic-selector",
   "display_name": "Periodic Model Selector",
   "description": "Select Google Gemini models from an interactive Periodic Table of Elements while keeping other models native.",
-  "version": "1.3.2",
+  "version": "1.3.3",
   "logo": "assets/logo.svg"
 }
