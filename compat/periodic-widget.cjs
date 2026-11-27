@@ -1,4 +1,4 @@
-// Self-contained main-world UI for Antigravity Periodic Model Selector (v1.3.3).
+// Self-contained main-world UI for Antigravity Periodic Model Selector (v1.4).
 // - Periodic Basin HUD in the natural valley (cols 4-11, rows 1-2) for instant side-by-side comparison
 // - Scientific atomic mass & electron configuration badges in the Element Spotlight plaque
 // - Integrated 2-tier Spotlight + Gliding Circular White Thumb Slider:
@@ -18,7 +18,7 @@ module.exports = function installAgPeriodicSelector() {
 
   const HOST_ID = 'ag-periodic-selector-host';
   const HIDE_STYLE_ID = 'ag-periodic-hide-native-menus';
-  const WIDGET_VERSION = 'v1.3.3';
+  const WIDGET_VERSION = 'v1.4';
   const GITHUB_RELEASES_URL = 'https://github.com/Xuyeppin/antigravity-periodic-selector/releases/latest';
 
   const CATEGORY_TINT = {
@@ -416,6 +416,10 @@ module.exports = function installAgPeriodicSelector() {
     if (state.themeMode === 'dark') return true;
     if (state.themeMode === 'light') return false;
     const html = document.documentElement;
+    // Respect Obsidian Prism theme attribute if present (works seamlessly standalone when absent)
+    const prismTheme = html.getAttribute('data-ag-cs-theme');
+    if (prismTheme === 'dark') return true;
+    if (prismTheme === 'light') return false;
     if (html.classList.contains('dark') || html.dataset.theme === 'dark') return true;
     if (html.classList.contains('light') || html.dataset.theme === 'light') return false;
     const cs = getComputedStyle(html);
@@ -431,6 +435,22 @@ module.exports = function installAgPeriodicSelector() {
       return fgLum > 0.5;
     }
     return false;
+  }
+
+  function detectSurfacePreset(dark) {
+    const html = document.documentElement;
+    if (!html.hasAttribute('data-ag-cs-style')) return 'default';
+    const pal = (html.getAttribute('data-ag-cs-palette') || '').toLowerCase();
+    const lightPreset = (html.getAttribute('data-ag-cs-light-preset') || '').toLowerCase();
+    if (!pal || pal === 'host') return 'default';
+    if (dark) {
+      if (pal === 'warm' || pal === 'claude') return 'prism-warm-dark';
+      if (pal === 'obsidian') return 'prism-obsidian-dark';
+      return 'default';
+    }
+    if (pal === 'warm' || pal === 'claude' || lightPreset === 'alabaster') return 'prism-warm-light';
+    if (pal === 'obsidian') return 'prism-cool-light';
+    return 'default';
   }
 
   function hasBox(el) {
@@ -449,7 +469,16 @@ module.exports = function installAgPeriodicSelector() {
 
   function getTriggerModelText(trigger) {
     if (!trigger) return '';
-    return E.cleanLabel(trigger.innerText || trigger.textContent || trigger.getAttribute('aria-label') || '');
+    // Strip Obsidian Prism decorative glyph / keycap spans if present; standalone uses direct innerText
+    if (trigger.querySelector?.('.ag-cs-model-glyph, .ag-pp-mini-keycap')) {
+      const clone = trigger.cloneNode(true);
+      for (const deco of clone.querySelectorAll('.ag-cs-model-glyph, .ag-pp-mini-keycap')) deco.remove();
+      const stripped = E.cleanLabel(clone.textContent || '');
+      if (stripped) return stripped;
+    }
+    const rawInner = E.cleanLabel(trigger.innerText || '');
+    if (rawInner && (E.isGoogleModel(rawInner) || isLikelyAiModelLabel(rawInner))) return rawInner;
+    return E.cleanLabel(trigger.textContent || trigger.getAttribute('aria-label') || rawInner || '');
   }
 
   function setNativeMenusHidden(hidden) {
@@ -459,7 +488,7 @@ module.exports = function installAgPeriodicSelector() {
         style = document.createElement('style');
         style.id = HIDE_STYLE_ID;
         style.textContent = `
-          [role="menu"], [data-testid="model-selector-panel"] {
+          [role="menu"], [data-testid="model-selector-panel"], [data-ag-cs-model-overlay="1"] {
             opacity: 0 !important;
             pointer-events: none !important;
             transition: none !important;
@@ -475,8 +504,9 @@ module.exports = function installAgPeriodicSelector() {
     }
   }
 
-  function isMenuNodeOpen(menuEl) {
-    if (!menuEl || !menuEl.isConnected || !hasBox(menuEl)) return false;
+  function isMenuNodeOpen(menuEl, requireBox = true) {
+    if (!menuEl || !menuEl.isConnected) return false;
+    if (requireBox && !hasBox(menuEl)) return false;
     if (menuEl.hasAttribute('data-closed') || menuEl.hasAttribute('data-ending-style')) return false;
     if (menuEl.hasAttribute('data-base-ui-focusable') && !menuEl.hasAttribute('data-open')) return false;
     return true;
@@ -487,7 +517,7 @@ module.exports = function installAgPeriodicSelector() {
     for (const panel of panels) {
       if (!panel.isConnected || !hasBox(panel)) continue;
       const parentMenu = panel.closest('[role="menu"]');
-      if (parentMenu && !isMenuNodeOpen(parentMenu)) continue;
+      if (parentMenu && !isMenuNodeOpen(parentMenu, true)) continue;
       return panel;
     }
     return null;
@@ -500,7 +530,9 @@ module.exports = function installAgPeriodicSelector() {
   function findLiveNestedMenu(item = null) {
     const nestedMenus = document.querySelectorAll('[role="menu"][data-nested]');
     for (const nested of nestedMenus) {
-      if (!isMenuNodeOpen(nested)) continue;
+      // Do not require non-zero bounding box: Obsidian Prism hides [data-nested] with display:none
+      // while keeping all live Base UI effort radio nodes mounted and clickable.
+      if (!isMenuNodeOpen(nested, false)) continue;
       if (nested.querySelectorAll('[data-testid="model-selector-effort-option"]').length < 1) continue;
       if (item && item.id) {
         const labelledBy = nested.getAttribute('aria-labelledby');
@@ -664,30 +696,44 @@ module.exports = function installAgPeriodicSelector() {
     // Fast path: submenu for this exact item is already open and live
     let nested = findLiveNestedMenu(item);
     if (!nested) {
-      // If a different item's nested submenu is currently open, close it first
+      // If a different item's nested submenu is currently open (e.g. auto-opened by Obsidian Prism),
+      // close ONLY that nested submenu so target item is no longer data-base-ui-inert.
       const otherNested = findLiveNestedMenu(null);
       if (otherNested) {
         otherNested.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', code: 'ArrowLeft', keyCode: 37, bubbles: true, cancelable: true }));
-        await sleep(25);
+        await sleep(30);
         if (shouldAbort?.()) return [];
+        if (findLiveNestedMenu(null) || item.hasAttribute('data-base-ui-inert')) {
+          document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true, cancelable: true }));
+          await sleep(40);
+          if (shouldAbort?.()) return [];
+        }
+      }
+      // If Escape also closed parent panel, re-open parent panel cleanly
+      let activeItem = item;
+      if (!activeItem.isConnected || !findLiveNativePanel()) {
+        const reopened = await ensureNativePanelOpen();
+        if (!reopened || shouldAbort?.()) return [];
+        activeItem = findMenuItemByBase(reopened, modelBase);
+        if (!activeItem) return [];
       }
 
       // Let focus settle 1 frame on X11/Chromium before firing ArrowRight so Base UI tracks activeIndex
-      try { item.focus({ preventScroll: true }); } catch { try { item.focus(); } catch {} }
+      try { activeItem.focus({ preventScroll: true }); } catch { try { activeItem.focus(); } catch {} }
       await sleep(20);
       if (shouldAbort?.()) return [];
-      triggerSubmenuOpen(item);
+      triggerSubmenuOpen(activeItem);
 
       for (let i = 0; i < 16; i++) {
         await sleep(25);
         if (shouldAbort?.()) return [];
-        nested = findLiveNestedMenu(item);
+        nested = findLiveNestedMenu(activeItem);
         if (nested) break;
         if (i === 5 || i === 10) {
-          try { item.focus({ preventScroll: true }); } catch {}
+          try { activeItem.focus({ preventScroll: true }); } catch {}
           await sleep(16);
           if (shouldAbort?.()) return [];
-          triggerSubmenuOpen(item);
+          triggerSubmenuOpen(activeItem);
         }
       }
     }
@@ -1022,6 +1068,7 @@ module.exports = function installAgPeriodicSelector() {
     if (hostEl && hostEl.isConnected) return;
     hostEl = document.createElement('div');
     hostEl.id = HOST_ID;
+    hostEl.setAttribute('data-prism-ignore', '1');
     hostEl.style.cssText = 'position:fixed;inset:0;z-index:2147483640;pointer-events:none;visibility:visible;';
     document.body.appendChild(hostEl);
     shadowRoot = hostEl.attachShadow({ mode: 'open' });
@@ -1077,19 +1124,62 @@ module.exports = function installAgPeriodicSelector() {
     }
   }
 
-  function styles(dark) {
-    const bg = dark
+  function styles(dark, preset = 'default') {
+    const palettes = {
+      'prism-obsidian-dark': {
+        bg: 'linear-gradient(165deg, rgba(19, 20, 25, 0.965) 0%, rgba(11, 12, 16, 0.985) 100%)',
+        cardBg: 'rgba(28, 29, 36, 0.78)',
+        border: 'rgba(220, 230, 255, 0.12)',
+        borderSoft: 'rgba(220, 230, 255, 0.065)',
+        fg: '#F4F7FF',
+        muted: '#94A3B8',
+        dim: 'rgba(148, 163, 184, 0.42)',
+        shadow: '0 28px 72px rgba(0, 0, 0, 0.74), inset 0 1px 0 rgba(235, 243, 255, 0.10)',
+      },
+      'prism-warm-dark': {
+        bg: 'linear-gradient(165deg, rgba(25, 23, 20, 0.965) 0%, rgba(16, 15, 13, 0.985) 100%)',
+        cardBg: 'rgba(36, 33, 29, 0.78)',
+        border: 'rgba(245, 235, 220, 0.13)',
+        borderSoft: 'rgba(245, 235, 220, 0.07)',
+        fg: '#F6F1EA',
+        muted: '#ADA397',
+        dim: 'rgba(173, 163, 151, 0.44)',
+        shadow: '0 28px 72px rgba(0, 0, 0, 0.72), inset 0 1px 0 rgba(255, 244, 230, 0.085)',
+      },
+      'prism-cool-light': {
+        bg: 'linear-gradient(165deg, rgba(252, 253, 255, 0.98) 0%, rgba(241, 246, 255, 0.99) 100%)',
+        cardBg: 'rgba(238, 243, 250, 0.88)',
+        border: 'rgba(15, 23, 42, 0.105)',
+        borderSoft: 'rgba(15, 23, 42, 0.065)',
+        fg: '#0F172A',
+        muted: '#475569',
+        dim: 'rgba(71, 85, 105, 0.46)',
+        shadow: '0 24px 64px rgba(15, 23, 42, 0.15), inset 0 1px 0 rgba(255, 255, 255, 0.94)',
+      },
+      'prism-warm-light': {
+        bg: 'linear-gradient(165deg, rgba(253, 251, 247, 0.985) 0%, rgba(245, 242, 234, 0.99) 100%)',
+        cardBg: 'rgba(236, 231, 220, 0.74)',
+        border: 'rgba(42, 32, 20, 0.12)',
+        borderSoft: 'rgba(42, 32, 20, 0.075)',
+        fg: '#1F1A14',
+        muted: '#6B5F52',
+        dim: 'rgba(107, 95, 82, 0.48)',
+        shadow: '0 24px 64px rgba(42, 32, 20, 0.14), inset 0 1px 0 rgba(255, 253, 248, 0.94)',
+      },
+    };
+    const p = palettes[preset] || null;
+    const bg = p ? p.bg : (dark
       ? 'linear-gradient(165deg, rgba(15, 18, 29, 0.96) 0%, rgba(10, 12, 20, 0.98) 100%)'
-      : 'linear-gradient(165deg, rgba(255, 255, 255, 0.98) 0%, rgba(244, 247, 254, 0.99) 100%)';
-    const cardBg = dark ? 'rgba(26, 31, 48, 0.72)' : 'rgba(241, 245, 253, 0.86)';
-    const border = dark ? 'rgba(148, 163, 184, 0.18)' : 'rgba(15, 23, 42, 0.11)';
-    const borderSoft = dark ? 'rgba(255, 255, 255, 0.06)' : 'rgba(15, 23, 42, 0.07)';
-    const fg = dark ? '#F4F7FF' : '#0F172A';
-    const muted = dark ? '#94A3B8' : '#475569';
-    const dim = dark ? 'rgba(148, 163, 184, 0.42)' : 'rgba(71, 85, 105, 0.46)';
-    const shadow = dark
+      : 'linear-gradient(165deg, rgba(255, 255, 255, 0.98) 0%, rgba(244, 247, 254, 0.99) 100%)');
+    const cardBg = p ? p.cardBg : (dark ? 'rgba(26, 31, 48, 0.72)' : 'rgba(241, 245, 253, 0.86)');
+    const border = p ? p.border : (dark ? 'rgba(148, 163, 184, 0.18)' : 'rgba(15, 23, 42, 0.11)');
+    const borderSoft = p ? p.borderSoft : (dark ? 'rgba(255, 255, 255, 0.06)' : 'rgba(15, 23, 42, 0.07)');
+    const fg = p ? p.fg : (dark ? '#F4F7FF' : '#0F172A');
+    const muted = p ? p.muted : (dark ? '#94A3B8' : '#475569');
+    const dim = p ? p.dim : (dark ? 'rgba(148, 163, 184, 0.42)' : 'rgba(71, 85, 105, 0.46)');
+    const shadow = p ? p.shadow : (dark
       ? '0 28px 72px rgba(0, 0, 0, 0.68), 0 0 0 1px rgba(255,255,255,0.06) inset'
-      : '0 24px 64px rgba(15, 23, 42, 0.16), 0 0 0 1px rgba(255,255,255,0.88) inset';
+      : '0 24px 64px rgba(15, 23, 42, 0.16), 0 0 0 1px rgba(255,255,255,0.88) inset');
 
     return `
       * { box-sizing: border-box; font-family: system-ui, -apple-system, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif; }
@@ -1171,12 +1261,6 @@ module.exports = function installAgPeriodicSelector() {
         margin-bottom: 11px; flex-wrap: wrap;
       }
       .title-wrap { display: flex; align-items: center; gap: 10px; min-width: 0; }
-      .logo-badge {
-        width: 30px; height: 30px; border-radius: 9px;
-        background: linear-gradient(135deg, #4285F4 0%, #8E6CFF 52%, #34A853 100%);
-        box-shadow: 0 4px 14px rgba(66, 133, 244, 0.35);
-        display: grid; place-items: center; color: #fff; font-weight: 800; font-size: 14px; flex-shrink: 0;
-      }
       .title { font-size: 13.5px; font-weight: 750; letter-spacing: 0.01em; }
       .subtitle { font-size: 11px; color: ${muted}; margin-top: 1px; }
       .actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
@@ -1969,6 +2053,7 @@ module.exports = function installAgPeriodicSelector() {
     }
 
     const dark = isDarkTheme();
+    const surfacePreset = detectSurfacePreset(dark);
     const { byAtomic, otherGoogle, nonGoogle } = groupedModels();
     const curParsed = E.parseModelInfo(state.currentLabel);
     const activeNum = curParsed.element ? curParsed.element.number : null;
@@ -2044,12 +2129,11 @@ module.exports = function installAgPeriodicSelector() {
     ` : '';
 
     shadowRoot.innerHTML = `
-      <style>${styles(dark)}</style>
+      <style>${styles(dark, surfacePreset)}</style>
       <div class="backdrop" data-action="close"></div>
       <div class="popover ${skipAnim ? 'is-open no-anim' : ''}" role="dialog" aria-label="${escapeHtml(t('title'))}">
         <div class="header">
           <div class="title-wrap">
-            <div class="logo-badge">⚛</div>
             <div>
               <div class="title">${escapeHtml(t('title'))}</div>
               <div class="subtitle">${escapeHtml(t('subtitle'))}</div>
