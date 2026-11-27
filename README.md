@@ -6,7 +6,7 @@
 
 **在 Google Antigravity 中以「化学元素周期表」选择 Google Gemini 模型，非 Google 模型保持原生体验。**
 
-[![Version 1.3.3](https://img.shields.io/badge/version-v1.3.3-4F7DF3?style=flat-square&labelColor=161925)](#)
+[![Version 1.4](https://img.shields.io/badge/version-v1.4-4F7DF3?style=flat-square&labelColor=161925)](#)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-34D399?style=flat-square&labelColor=161925)](#各系统安装方法)
 [![Antigravity 2.33+](https://img.shields.io/badge/Antigravity-2.33%2B-A78BFA?style=flat-square&labelColor=161925)](#)
 [![License MIT](https://img.shields.io/badge/license-MIT-94A3B8?style=flat-square&labelColor=161925)](LICENSE)
@@ -28,8 +28,9 @@ Google 在 **Gemini 4** 世代采用**化学元素周期表**命名模型（如 
    - 在下方元素长框内直接拖动或点击纯白圆形滑钮即可平滑调节思考程度（`低 / 中 / 高 / 极高`），也支持直接按键盘 **`←` / `→` 左右方向键**微调；
    - **元素同色系 + 最高档流动光效**：滑钮左侧填充色自动匹配当前元素的主题色（右侧保持无色浅灰底轨与内置档位圆点），滑到最高思考程度时呈现**持续向右流动的绚丽渐变光流**，升降档位均零闪烁；
    - **零闪烁驻留**：切换模型或调节思考程度后，元素周期表浮窗保持打开、原地丝滑刷新，仅在点击浮窗外部空白处或按 `Esc` 时关闭。
-3. **深色 / 浅色与中英文一键切换**：
-   - 自动适配 Antigravity 主题，同时在右上角提供 **`🌙 深色 / ☀️ 浅色`** 与 **`EN / 中文`** 切换按钮及 **`4 周期 | 全表 118`** 视图切换，偏好自动记忆。
+3. **深色 / 浅色与中英文一键切换（兼容 Obsidian Prism）**：
+   - 自动适配 Antigravity 主题，若同时安装了 [Obsidian Prism](https://github.com/RMvdesi/obsidian-prism) 还会自动跟随其四套深浅色板（深空黑曜 / 暖炭玄岩 / 白昼冷晶 / 暖白画册）并自动隔离互不干扰，未安装时完全独立运行；
+   - 右上角提供 **`🌙 深色 / ☀️ 浅色`** 与 **`EN / 中文`** 切换按钮及 **`4 周期 | 全表 118`** 视图切换，偏好自动记忆。
 4. **非 Google 模型 100% 保持原样**：
    - 当切换到 Claude、GPT 等非 Google 模型后，再次点击模型选择器将**完全保持 Antigravity 原生下拉列表**，不做任何拦截；
    - 在周期表浮窗中也可随时点击底部「其他模型」标签或右上角 **「原生列表 ↗」** 切回原生菜单。
